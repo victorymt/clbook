@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "book-library"
+version = "0.1.0"
+description = "A local learning-document library and web reader"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "book contributors"}]
+
+[project.scripts]
+book = "book.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+book = ["static/*.css", "static/*.js"]
