@@ -4,8 +4,25 @@ const state = {
   book: null,
   currentDocumentId: null,
   progressTimer: null,
+  progressGeneration: 0,
+  readerStateWrite: Promise.resolve(),
   dragDocumentId: null,
 };
+
+function cancelProgressSave() {
+  window.clearTimeout(state.progressTimer);
+  state.progressTimer = null;
+  state.progressGeneration += 1;
+}
+
+function persistReaderState(bookId, documentId, theme) {
+  const write = state.readerStateWrite.then(() => request(`/api/books/${bookId}/state`, {
+    method: 'PUT',
+    body: JSON.stringify({ last_document_id: documentId, theme }),
+  }));
+  state.readerStateWrite = write.catch(() => {});
+  return write;
+}
 
 async function request(path, options = {}) {
   const response = await fetch(path, {
@@ -37,6 +54,7 @@ function initialRoute() {
 }
 
 function renderLibrary(books) {
+  cancelProgressSave();
   state.book = null;
   state.currentDocumentId = null;
   app.innerHTML = `
@@ -81,7 +99,7 @@ function renderReader() {
   theme.addEventListener('change', async () => {
     book.theme = theme.value;
     app.querySelector('.reader').dataset.theme = book.theme;
-    await request(`/api/books/${book.id}/state`, { method: 'PUT', body: JSON.stringify({ last_document_id: state.currentDocumentId, theme: book.theme }) });
+    await persistReaderState(book.id, state.currentDocumentId, book.theme);
     if (state.currentDocumentId) selectDocument(state.currentDocumentId, false);
   });
   app.querySelector('#back').addEventListener('click', showLibrary);
@@ -164,18 +182,25 @@ function bindSearch() {
 async function selectDocument(documentId, saveState = true) {
   const document = state.book.documents.find((item) => item.id === documentId);
   if (!document) return;
+  cancelProgressSave();
+  const selectionGeneration = state.progressGeneration;
   state.currentDocumentId = documentId;
   app.querySelectorAll('.toc-item').forEach((item) => item.classList.toggle('selected', Number(item.dataset.documentId) === documentId));
   const frame = app.querySelector('#reader-frame');
   if (!frame) return;
-  if (saveState) await request(`/api/books/${state.book.id}/state`, { method: 'PUT', body: JSON.stringify({ last_document_id: documentId, theme: state.book.theme }) });
+  if (saveState) await persistReaderState(state.book.id, documentId, state.book.theme);
+  if (selectionGeneration !== state.progressGeneration || state.currentDocumentId !== documentId) return;
   setLocation(state.book.id, documentId);
-  frame.onload = () => restoreProgress(document, frame);
+  const progressGeneration = state.progressGeneration;
+  frame.onload = () => restoreProgress(document, frame, progressGeneration);
   frame.src = `/documents/${documentId}/content?theme=${encodeURIComponent(state.book.theme)}`;
   updateNavigation();
 }
 
-function restoreProgress(document, frame) {
+function restoreProgress(document, frame, progressGeneration) {
+  if (progressGeneration !== state.progressGeneration || state.currentDocumentId !== document.id) return;
+  const bookId = state.book?.id;
+  if (bookId === undefined) return;
   try {
     const child = frame.contentDocument;
     const scrollElement = child.scrollingElement || child.documentElement;
@@ -187,7 +212,12 @@ function restoreProgress(document, frame) {
       const ratio = maximum ? scrollElement.scrollTop / maximum : 0;
       updateProgressLabel(ratio);
       window.clearTimeout(state.progressTimer);
-      state.progressTimer = window.setTimeout(() => saveProgress(document.id, ratio), 450);
+      const generation = state.progressGeneration;
+      state.progressTimer = window.setTimeout(() => {
+        if (generation === state.progressGeneration && state.currentDocumentId === document.id) {
+          saveProgress(bookId, document.id, ratio);
+        }
+      }, 450);
     }, { passive: true });
   } catch (_) {
     updateProgressLabel(0);
@@ -199,9 +229,11 @@ function updateProgressLabel(ratio) {
   if (label) label.textContent = `${Math.round(Math.max(0, Math.min(1, ratio)) * 100)}%`;
 }
 
-function saveProgress(documentId, ratio) {
+function saveProgress(bookId, documentId, ratio) {
   request(`/api/documents/${documentId}/progress`, { method: 'PUT', body: JSON.stringify({ scroll_ratio: ratio }) }).catch(() => {});
-  const document = state.book.documents.find((item) => item.id === documentId);
+  const document = state.book?.id === bookId
+    ? state.book.documents.find((item) => item.id === documentId)
+    : null;
   if (document) document.scroll_ratio = ratio;
 }
 
@@ -221,15 +253,17 @@ function adjacentDocument(direction) {
 }
 
 async function loadBook(bookId, requestedDocumentId = null) {
+  cancelProgressSave();
   state.book = await request(`/api/books/${bookId}`);
   const validRequested = state.book.documents.some((document) => document.id === requestedDocumentId);
   const validLast = state.book.documents.some((document) => document.id === state.book.last_document_id);
   state.currentDocumentId = validRequested ? requestedDocumentId : (validLast ? state.book.last_document_id : state.book.documents[0]?.id || null);
   renderReader();
-  if (state.currentDocumentId) selectDocument(state.currentDocumentId, false);
+  if (state.currentDocumentId) selectDocument(state.currentDocumentId);
 }
 
 async function showLibrary() {
+  cancelProgressSave();
   const books = await request('/api/books');
   renderLibrary(books);
 }

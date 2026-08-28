@@ -123,6 +123,9 @@ class BookCliTestCase(unittest.TestCase):
                 body = response.read().decode("utf-8")
                 self.assertIn("Vectors", body)
                 self.assertIn("script-src 'none'", response.headers["Content-Security-Policy"])
+            with urlopen(f"{base}/documents/{document_id}/content?theme=dark") as response:
+                body = response.read().decode("utf-8")
+                self.assertIn('data-book-theme="dark"', body)
             asset_path = resources[0]["relative_path"]
             with urlopen(f"{base}/documents/{document_id}/{asset_path}") as response:
                 self.assertGreater(len(response.read()), 0)
@@ -130,6 +133,34 @@ class BookCliTestCase(unittest.TestCase):
             server.shutdown()
             thread.join(timeout=2)
             server.server_close()
+
+    def test_html_void_tags_do_not_remove_following_content(self) -> None:
+        source = self.sources / "void.html"
+        source.write_text(
+            "<html><body><base href='/'><p>Visible after base.</p></body></html>",
+            encoding="utf-8",
+        )
+        self.add_book()
+        document_id = self.add_document("Study", source)
+        library = Library(self.data_dir)
+        document, _ = library.document_info(document_id)
+        entry = (library.document_dir(document_id) / document["entry_path"]).read_text(encoding="utf-8")
+        self.assertIn("Visible after base.", entry)
+        self.assertNotIn("<base", entry)
+
+    def test_archive_does_not_copy_files_outside_source_directory(self) -> None:
+        nested = self.sources / "nested"
+        nested.mkdir()
+        secret = self.sources / "secret.txt"
+        secret.write_text("private", encoding="utf-8")
+        source = nested / "outside.html"
+        source.write_text("<img src='../secret.txt'>", encoding="utf-8")
+        self.add_book()
+        document_id = self.add_document("Study", source)
+        library = Library(self.data_dir)
+        _, resources = library.document_info(document_id)
+        self.assertEqual(resources, [])
+        self.assertFalse(any(path.name == "secret.txt" for path in library.document_dir(document_id).rglob("*")))
 
     def test_web_api_persists_progress_theme_and_order(self) -> None:
         first = self.sources / "first.txt"
@@ -182,6 +213,19 @@ class BookCliTestCase(unittest.TestCase):
             server.shutdown()
             thread.join(timeout=2)
             server.server_close()
+
+    def test_progress_updates_do_not_change_selected_document(self) -> None:
+        first = self.sources / "first.txt"
+        second = self.sources / "second.txt"
+        first.write_text("First chapter", encoding="utf-8")
+        second.write_text("Second chapter", encoding="utf-8")
+        self.add_book()
+        first_id = self.add_document("Study", first)
+        second_id = self.add_document("Study", second)
+        library = Library(self.data_dir)
+        library.update_reader_state(1, second_id, "light")
+        library.update_progress(first_id, 0.5)
+        self.assertEqual(library.get_book_for_web(1)["last_document_id"], second_id)
 
     def test_book_with_documents_requires_explicit_removal(self) -> None:
         source = self.sources / "notes.txt"

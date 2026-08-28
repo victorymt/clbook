@@ -89,14 +89,20 @@ def _is_asset_attribute(tag: str, attr: str, attrs: dict[str, str | None]) -> bo
 
 
 def _is_unsafe_url(value: str) -> bool:
-    return value.strip().casefold().startswith(("javascript:", "vbscript:"))
+    normalized = re.sub(r"[\x00-\x20]+", "", value).casefold()
+    return normalized.startswith(("javascript:", "vbscript:"))
 
 
-def resolve_local_url(value: str, origin: Path) -> Path | None:
+def resolve_local_url(value: str, origin: Path, allowed_root: Path | None = None) -> Path | None:
     parts = urlsplit(value.strip())
     if not parts.path or parts.scheme or parts.netloc or parts.path.startswith("/"):
         return None
     candidate = (origin.parent / unquote(parts.path)).resolve()
+    if allowed_root is not None:
+        try:
+            candidate.relative_to(allowed_root)
+        except ValueError:
+            return None
     if candidate.is_file():
         return candidate
     return None
@@ -248,14 +254,17 @@ class HtmlRewriter(HTMLParser):
         self.output.append(f"<{tag}{''.join(rewritten)}>")
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        normalized = tag.lower()
         if self.skip_depth:
             self.skip_depth += 1
             return
-        if tag.lower() in SKIPPED_HTML_TAGS:
+        if normalized in SKIPPED_HTML_TAGS:
+            if normalized in VOID_TAGS:
+                return
             self.skip_depth = 1
             return
         self._write_tag(tag, attrs)
-        if tag.lower() == "style":
+        if normalized == "style":
             self.style_depth += 1
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
@@ -348,10 +357,17 @@ def references_for(path: Path, text: str) -> list[str]:
     return []
 
 
-def archive_document(source_path: Path, destination: Path) -> ArchiveResult:
+def archive_document(
+    source_path: Path, destination: Path, allowed_root: Path | None = None
+) -> ArchiveResult:
     source_path = source_path.expanduser().resolve()
     if not source_path.is_file():
         raise BookError(f"'{source_path}' is not a readable file.")
+    archive_root = (allowed_root or source_path.parent).expanduser().resolve()
+    try:
+        source_path.relative_to(archive_root)
+    except ValueError as error:
+        raise BookError(f"Source '{source_path}' must be inside the allowed import root '{archive_root}'.") from error
 
     document_type = document_type_for(source_path)
     source_text = read_text(source_path)
@@ -359,7 +375,7 @@ def archive_document(source_path: Path, destination: Path) -> ArchiveResult:
     pending: list[Path] = []
 
     def register(value: str, origin: Path) -> None:
-        target = resolve_local_url(value, origin)
+        target = resolve_local_url(value, origin, archive_root)
         if target is not None and target != source_path and target not in mapping:
             mapping[target] = relative_asset_path(target)
             pending.append(target)
@@ -431,14 +447,16 @@ def suggested_title(source_path: Path, document_type: str, content: str) -> str:
     return source_path.stem or source_path.name
 
 
-def replace_archive(source_path: Path, target_dir: Path) -> ArchiveResult:
+def replace_archive(
+    source_path: Path, target_dir: Path, allowed_root: Path | None = None
+) -> ArchiveResult:
     temporary = target_dir.parent / f".{target_dir.name}.refresh-{os.getpid()}"
     suffix = 1
     while temporary.exists():
         suffix += 1
         temporary = target_dir.parent / f".{target_dir.name}.refresh-{os.getpid()}-{suffix}"
     try:
-        result = archive_document(source_path, temporary)
+        result = archive_document(source_path, temporary, allowed_root)
     except Exception:
         shutil.rmtree(temporary, ignore_errors=True)
         raise

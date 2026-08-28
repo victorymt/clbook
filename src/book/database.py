@@ -4,7 +4,7 @@ import os
 import shutil
 import sqlite3
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterator
 
@@ -63,7 +63,7 @@ CREATE TABLE IF NOT EXISTS document_progress (
 
 
 def utc_now() -> str:
-    return datetime.now(UTC).replace(microsecond=0).isoformat()
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
 
 def default_data_dir() -> Path:
@@ -100,10 +100,10 @@ class Library:
         self.root.mkdir(parents=True, exist_ok=True)
         self.documents_root.mkdir(exist_ok=True)
         connection = sqlite3.connect(self.database_path)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        connection.executescript(SCHEMA)
         try:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON")
+            connection.executescript(SCHEMA)
             yield connection
             connection.commit()
         except Exception:
@@ -441,20 +441,6 @@ class Library:
                     updated_at = excluded.updated_at
                 """,
                 (document["id"], scroll_ratio, now),
-            )
-            current_state = connection.execute(
-                "SELECT theme FROM reader_state WHERE book_id = ?", (document["book_id"],)
-            ).fetchone()
-            connection.execute(
-                """
-                INSERT INTO reader_state(book_id, last_document_id, theme, updated_at)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT(book_id) DO UPDATE SET
-                    last_document_id = excluded.last_document_id,
-                    theme = excluded.theme,
-                    updated_at = excluded.updated_at
-                """,
-                (document["book_id"], document["id"], current_state["theme"] if current_state else "light", now),
             )
             return {"document_id": document["id"], "scroll_ratio": scroll_ratio}
 

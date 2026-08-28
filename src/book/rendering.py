@@ -44,10 +44,65 @@ body[data-theme='dark'] pre, body[data-theme='dark'] code { background: #252b31;
 @media (max-width: 640px) { body { font-size: 17px; } main { width: min(100% - 28px, 780px); padding-top: 32px; } }
 """
 
+HTML_THEME_STYLE = """
+html[data-book-theme='light'], html[data-book-theme='light'] body,
+[data-book-theme='light'] {
+  color-scheme: light;
+  --book-bg: #f7f7f4;
+  --book-ink: #20252d;
+  --book-heading: #141920;
+  --book-link: #006b6a;
+  --book-muted: #46505c;
+}
+html[data-book-theme='dark'], html[data-book-theme='dark'] body,
+[data-book-theme='dark'] {
+  color-scheme: dark;
+  --book-bg: #171b20;
+  --book-ink: #e7e8e5;
+  --book-heading: #f5f5f2;
+  --book-link: #60c5bb;
+  --book-muted: #bdc6c3;
+}
+html[data-book-theme] body,
+[data-book-theme] {
+  color: var(--book-ink) !important;
+  background: var(--book-bg) !important;
+}
+html[data-book-theme] body h1,
+html[data-book-theme] body h2,
+html[data-book-theme] body h3,
+html[data-book-theme] body h4,
+html[data-book-theme] body h5,
+html[data-book-theme] body h6,
+[data-book-theme] h1,
+[data-book-theme] h2,
+[data-book-theme] h3,
+[data-book-theme] h4,
+[data-book-theme] h5,
+[data-book-theme] h6 {
+  color: var(--book-heading) !important;
+}
+html[data-book-theme] body a,
+[data-book-theme] a { color: var(--book-link) !important; }
+html[data-book-theme] body blockquote,
+[data-book-theme] blockquote { color: var(--book-muted) !important; }
+html[data-book-theme] body pre,
+html[data-book-theme] body code {
+  color: var(--book-ink) !important;
+  background: color-mix(in srgb, var(--book-ink) 10%, var(--book-bg)) !important;
+}
+[data-book-theme] pre,
+[data-book-theme] code {
+  color: var(--book-ink) !important;
+  background: color-mix(in srgb, var(--book-ink) 10%, var(--book-bg)) !important;
+}
+"""
+
 
 def _safe_url(value: str) -> str:
     value = value.strip()
-    if value.casefold().startswith(("javascript:", "vbscript:")):
+    normalized = re.sub(r"[\x00-\x20]+", "", value).casefold()
+    if normalized.startswith(("javascript:", "vbscript:")):
         return "#"
     return value
 
@@ -185,13 +240,38 @@ def document_shell(title: str, body: str, theme: str) -> str:
 </html>"""
 
 
+def apply_html_theme(source: str, theme: str) -> str:
+    resolved_theme = theme if theme in {"light", "dark"} else "light"
+    theme_attribute = f'data-book-theme="{resolved_theme}"'
+
+    def add_attribute(match: re.Match[str]) -> str:
+        tag = match.group(1)
+        attributes = re.sub(
+            r"\sdata-book-theme\s*=\s*(?:\"[^\"]*\"|'[^']*'|[^\s>]+)",
+            "",
+            match.group("attributes"),
+            flags=re.I,
+        )
+        return f"<{tag}{attributes} {theme_attribute}>"
+
+    themed = re.sub(r"<(html|body)(?P<attributes>[^>]*)>", add_attribute, source, flags=re.I, count=2)
+    style = f'<style id="book-theme">{HTML_THEME_STYLE}</style>'
+    if re.search(r"</head\s*>", themed, flags=re.I):
+        themed = re.sub(r"</head\s*>", f"{style}</head>", themed, count=1, flags=re.I)
+    elif re.search(r"<html[^>]*>", themed, flags=re.I):
+        themed = re.sub(r"(<html[^>]*>)", rf"\1{style}", themed, count=1, flags=re.I)
+    else:
+        themed = f'<div {theme_attribute}>{style}{themed}</div>'
+    return themed
+
+
 def render_document(document: Any, bundle_dir: Path, theme: str) -> str:
     entry = bundle_dir / document["entry_path"]
     if not entry.is_file():
         raise BookError("The archived document file is missing. Run 'book doc refresh' to restore it.")
     source = read_text(entry)
     if document["document_type"] == "html":
-        return source
+        return apply_html_theme(source, theme)
     if document["document_type"] == "markdown":
         return document_shell(document["title"], markdown_to_html(source), theme)
     return document_shell(document["title"], f"<pre>{html.escape(source)}</pre>", theme)
