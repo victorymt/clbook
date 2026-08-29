@@ -6,12 +6,24 @@
 
 ## Requirements
 
-Python 3.10 or newer. The runtime uses only the Python standard library.
+Python 3.10 or newer. The runtime uses only the Python standard library. The
+recommended installation method uses [uv](https://docs.astral.sh/uv/).
 
 ## Install
 
+Install `book` as an isolated command-line tool from the repository:
+
 ```bash
-python -m pip install -e .
+uv tool install .
+```
+
+After installation, verify that the command is available with `book --help`.
+To reinstall it after updating the repository, run `uv tool install --force .`.
+
+Alternatively, install it into the active Python environment with pip:
+
+```bash
+python -m pip install .
 ```
 
 The library lives in `$XDG_DATA_HOME/book`, or `~/.local/share/book` when XDG is not configured. Set `BOOK_DATA_DIR` or pass `--data-dir PATH` to keep a library somewhere else.

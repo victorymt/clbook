@@ -6,12 +6,24 @@
 
 ## 环境要求
 
-Python 3.10 或更高版本。运行时只使用 Python 标准库。
+Python 3.10 或更高版本。运行时只使用 Python 标准库。推荐使用
+[uv](https://docs.astral.sh/uv/) 安装。
 
 ## 安装
 
+在项目目录中将 `book` 安装为独立的命令行工具：
+
 ```bash
-python -m pip install -e .
+uv tool install .
+```
+
+安装后可运行 `book --help` 检查命令是否可用。项目代码更新后，可使用
+`uv tool install --force .` 重新安装。
+
+也可以使用 pip 将其安装到当前 Python 环境：
+
+```bash
+python -m pip install .
 ```
 
 资料库默认位于 `$XDG_DATA_HOME/book`；若未配置 XDG，则位于 `~/.local/share/book`。可设置 `BOOK_DATA_DIR`，或在单次命令前添加 `--data-dir PATH`，将资料库放到其他位置。
