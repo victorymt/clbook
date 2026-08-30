@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import sqlite3
+import tempfile
+import zipfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,6 +32,8 @@ CREATE TABLE IF NOT EXISTS documents (
     document_type TEXT NOT NULL,
     content TEXT NOT NULL,
     position INTEGER NOT NULL,
+    source_mtime REAL,
+    source_size INTEGER,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE(book_id, source_path)
@@ -60,6 +65,9 @@ CREATE TABLE IF NOT EXISTS document_progress (
     updated_at TEXT NOT NULL
 );
 """
+
+
+_UNSET = object()
 
 
 def utc_now() -> str:
@@ -104,6 +112,7 @@ class Library:
             connection.row_factory = sqlite3.Row
             connection.execute("PRAGMA foreign_keys = ON")
             connection.executescript(SCHEMA)
+            self._migrate(connection)
             yield connection
             connection.commit()
         except Exception:
@@ -111,6 +120,52 @@ class Library:
             raise
         finally:
             connection.close()
+
+    @staticmethod
+    def _migrate(connection: sqlite3.Connection) -> None:
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(documents)")}
+        if "source_mtime" not in columns:
+            connection.execute("ALTER TABLE documents ADD COLUMN source_mtime REAL")
+        if "source_size" not in columns:
+            connection.execute("ALTER TABLE documents ADD COLUMN source_size INTEGER")
+        try:
+            fts_exists = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'documents_fts'"
+            ).fetchone() is not None
+            connection.execute(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(title, content, content='documents', content_rowid='id')"
+            )
+            connection.executescript(
+                """
+                CREATE TRIGGER IF NOT EXISTS documents_fts_insert AFTER INSERT ON documents BEGIN
+                    INSERT INTO documents_fts(rowid, title, content) VALUES (new.id, new.title, new.content);
+                END;
+                CREATE TRIGGER IF NOT EXISTS documents_fts_delete AFTER DELETE ON documents BEGIN
+                    INSERT INTO documents_fts(documents_fts, rowid, title, content)
+                    VALUES ('delete', old.id, old.title, old.content);
+                END;
+                CREATE TRIGGER IF NOT EXISTS documents_fts_update AFTER UPDATE OF title, content ON documents BEGIN
+                    INSERT INTO documents_fts(documents_fts, rowid, title, content)
+                    VALUES ('delete', old.id, old.title, old.content);
+                    INSERT INTO documents_fts(rowid, title, content) VALUES (new.id, new.title, new.content);
+                END;
+                """
+            )
+            document_count = connection.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+            indexed_count = connection.execute("SELECT COUNT(*) FROM documents_fts").fetchone()[0]
+            if not fts_exists or document_count != indexed_count:
+                connection.execute("INSERT INTO documents_fts(documents_fts) VALUES ('rebuild')")
+        except sqlite3.OperationalError:
+            # FTS5 is optional in some Python/SQLite builds; the search method has a safe fallback.
+            pass
+
+    @staticmethod
+    def _source_metadata(path: Path) -> tuple[float | None, int | None]:
+        try:
+            stat = path.stat()
+        except OSError:
+            return None, None
+        return stat.st_mtime, stat.st_size
 
     def add_book(self, title: str, description: str = "") -> sqlite3.Row:
         title = title.strip()
@@ -159,6 +214,32 @@ class Library:
                 connection.execute(
                     "UPDATE books SET title = ?, updated_at = ? WHERE id = ?",
                     (title, utc_now(), book["id"]),
+                )
+                return self.get_book(connection, str(book["id"]))
+        except sqlite3.IntegrityError as error:
+            raise BookError(f"A book named '{title}' already exists.") from error
+
+    def update_book(
+        self,
+        identifier: str,
+        *,
+        title: str | None = None,
+        description: str | None = None,
+    ) -> sqlite3.Row:
+        if title is None and description is None:
+            raise BookError("Provide a title or description to update.")
+        if title is not None:
+            title = title.strip()
+            if not title:
+                raise BookError("Book title cannot be empty.")
+        try:
+            with self.connection() as connection:
+                book = self.get_book(connection, identifier)
+                resolved_title = title if title is not None else book["title"]
+                resolved_description = description.strip() if description is not None else book["description"]
+                connection.execute(
+                    "UPDATE books SET title = ?, description = ?, updated_at = ? WHERE id = ?",
+                    (resolved_title, resolved_description, utc_now(), book["id"]),
                 )
                 return self.get_book(connection, str(book["id"]))
         except sqlite3.IntegrityError as error:
@@ -248,13 +329,18 @@ class Library:
                 (book["id"],),
             ).fetchone()[0]
             now = utc_now()
+            source_mtime, source_size = self._source_metadata(source_path)
             cursor = connection.execute(
                 """
                 INSERT INTO documents(
-                    book_id, title, source_path, entry_path, document_type, content, position, created_at, updated_at
-                ) VALUES (?, ?, ?, '', ?, ?, ?, ?, ?)
+                    book_id, title, source_path, entry_path, document_type, content, position,
+                    source_mtime, source_size, created_at, updated_at
+                ) VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (book["id"], title, str(source_path), document_type, content, position, now, now),
+                (
+                    book["id"], title, str(source_path), document_type, content, position,
+                    source_mtime, source_size, now, now,
+                ),
             )
             document_id = int(cursor.lastrowid)
             connection.execute("UPDATE books SET updated_at = ? WHERE id = ?", (now, book["id"]))
@@ -286,6 +372,20 @@ class Library:
             connection.execute("UPDATE books SET updated_at = ? WHERE id = ?", (now, document["book_id"]))
             return self.get_document(connection, document_id)
 
+    def rename_document(self, document_id: int | str, title: str) -> sqlite3.Row:
+        title = title.strip()
+        if not title:
+            raise BookError("Document title cannot be empty.")
+        with self.connection() as connection:
+            document = self.get_document(connection, document_id)
+            now = utc_now()
+            connection.execute(
+                "UPDATE documents SET title = ?, updated_at = ? WHERE id = ?",
+                (title, now, document["id"]),
+            )
+            connection.execute("UPDATE books SET updated_at = ? WHERE id = ?", (now, document["book_id"]))
+            return self.get_document(connection, document["id"])
+
     def update_document_import(
         self,
         document_id: int,
@@ -300,10 +400,17 @@ class Library:
             connection.execute(
                 """
                 UPDATE documents
-                SET entry_path = ?, document_type = ?, content = ?, updated_at = ?
+                SET entry_path = ?, document_type = ?, content = ?, source_mtime = ?, source_size = ?, updated_at = ?
                 WHERE id = ?
                 """,
-                (entry_path, document_type, content, now, document_id),
+                (
+                    entry_path,
+                    document_type,
+                    content,
+                    *self._source_metadata(Path(document["source_path"])),
+                    now,
+                    document_id,
+                ),
             )
             connection.execute("DELETE FROM document_resources WHERE document_id = ?", (document_id,))
             connection.executemany(
@@ -374,6 +481,7 @@ class Library:
             documents = connection.execute(
                 """
                 SELECT documents.id, documents.title, documents.position, documents.document_type,
+                       documents.source_path, documents.source_mtime, documents.source_size,
                        COALESCE(document_progress.scroll_ratio, 0) AS scroll_ratio
                 FROM documents
                 LEFT JOIN document_progress ON document_progress.document_id = documents.id
@@ -382,33 +490,78 @@ class Library:
                 """,
                 (book_id,),
             ).fetchall()
+            document_values = [dict(row) for row in documents]
+            for item in document_values:
+                current_mtime, current_size = self._source_metadata(Path(item["source_path"]))
+                item["source_stale"] = item["source_mtime"] is not None and (
+                    current_mtime is None
+                    or current_mtime != item["source_mtime"]
+                    or current_size != item["source_size"]
+                )
+                item.pop("source_path", None)
+                item.pop("source_mtime", None)
+                item.pop("source_size", None)
+            progress = (
+                sum(float(item["scroll_ratio"] or 0) for item in document_values) / len(document_values)
+                if document_values
+                else 0.0
+            )
             return {
                 "id": book["id"],
                 "title": book["title"],
                 "description": book["description"],
                 "theme": state["theme"] if state else "light",
                 "last_document_id": state["last_document_id"] if state else None,
-                "documents": [dict(row) for row in documents],
+                "documents": document_values,
+                "progress": progress,
             }
+
+    def document_links(self, book_id: int) -> dict[str, int]:
+        with self.connection() as connection:
+            rows = connection.execute(
+                "SELECT id, source_path FROM documents WHERE book_id = ?", (book_id,)
+            ).fetchall()
+        return {str(Path(row["source_path"]).resolve()): int(row["id"]) for row in rows}
+
+    def is_document_stale(self, document_id: int | str) -> bool:
+        document, _ = self.document_info(document_id)
+        current_mtime, current_size = self._source_metadata(Path(document["source_path"]))
+        return document["source_mtime"] is not None and (
+            current_mtime is None
+            or current_mtime != document["source_mtime"]
+            or current_size != document["source_size"]
+        )
 
     def list_books_for_web(self) -> list[dict[str, object]]:
         return [dict(row) for row in self.list_books()]
 
     def update_reader_state(
-        self, book_id: int, last_document_id: int | None, theme: str | None = None
+        self,
+        book_id: int,
+        last_document_id: int | None | object = _UNSET,
+        theme: str | None | object = _UNSET,
     ) -> dict[str, object]:
-        if theme is not None and theme not in {"light", "dark"}:
+        if theme is not _UNSET and theme is not None and theme not in {"light", "dark"}:
             raise BookError("Theme must be 'light' or 'dark'.")
         with self.connection() as connection:
             book = self.get_book(connection, str(book_id))
-            if last_document_id is not None:
+            if last_document_id is not _UNSET and last_document_id is not None:
                 document = self.get_document(connection, last_document_id)
                 if document["book_id"] != book["id"]:
                     raise BookError("The selected document does not belong to this book.")
             current = connection.execute(
                 "SELECT * FROM reader_state WHERE book_id = ?", (book["id"],)
             ).fetchone()
-            resolved_theme = theme or (current["theme"] if current else "light")
+            resolved_document = (
+                last_document_id
+                if last_document_id is not _UNSET
+                else (current["last_document_id"] if current else None)
+            )
+            resolved_theme = (
+                theme
+                if theme is not _UNSET and theme is not None
+                else (current["theme"] if current else "light")
+            )
             connection.execute(
                 """
                 INSERT INTO reader_state(book_id, last_document_id, theme, updated_at)
@@ -418,11 +571,11 @@ class Library:
                     theme = excluded.theme,
                     updated_at = excluded.updated_at
                 """,
-                (book["id"], last_document_id, resolved_theme, utc_now()),
+                (book["id"], resolved_document, resolved_theme, utc_now()),
             )
             return {
                 "book_id": book["id"],
-                "last_document_id": last_document_id,
+                "last_document_id": resolved_document,
                 "theme": resolved_theme,
             }
 
@@ -444,10 +597,19 @@ class Library:
             )
             return {"document_id": document["id"], "scroll_ratio": scroll_ratio}
 
-    def search(self, query: str, book_identifier: str | None = None) -> list[dict[str, object]]:
+    def search(
+        self,
+        query: str,
+        book_identifier: str | None = None,
+        *,
+        limit: int | None = None,
+        offset: int = 0,
+    ) -> list[dict[str, object]]:
         needle = query.strip().casefold()
         if not needle:
             raise BookError("Search query cannot be empty.")
+        if offset < 0 or (limit is not None and limit < 1):
+            raise BookError("Search limit and offset must be non-negative.")
         with self.connection() as connection:
             values: tuple[object, ...] = ()
             clause = ""
@@ -455,6 +617,40 @@ class Library:
                 book = self.get_book(connection, book_identifier)
                 clause = "WHERE documents.book_id = ?"
                 values = (book["id"],)
+            fts_ids: list[int] | None = None
+            try:
+                tokens = re.findall(r"[\w]+", needle, flags=re.UNICODE)
+                if tokens:
+                    match_query = " AND ".join(f'"{token.replace(chr(34), "")}"*' for token in tokens)
+                    fts_ids = [
+                        int(row[0])
+                        for row in connection.execute(
+                            "SELECT rowid FROM documents_fts WHERE documents_fts MATCH ?", (match_query,)
+                        ).fetchall()
+                    ]
+            except (sqlite3.OperationalError, sqlite3.DatabaseError):
+                fts_ids = None
+            if fts_ids is not None:
+                title_like = f"%{needle}%"
+                title_ids = [
+                    int(row[0])
+                    for row in connection.execute(
+                        """
+                        SELECT documents.id
+                        FROM documents JOIN books ON books.id = documents.book_id
+                        WHERE documents.title LIKE ? COLLATE NOCASE OR books.title LIKE ? COLLATE NOCASE
+                        """,
+                        (title_like, title_like),
+                    ).fetchall()
+                ]
+                fts_ids = sorted(set(fts_ids).union(title_ids))
+                if not fts_ids:
+                    # Prefix matching cannot represent arbitrary substring searches; retain the old behavior.
+                    fts_ids = None
+            if fts_ids is not None:
+                placeholders = ", ".join("?" for _ in fts_ids)
+                clause = f"{clause} {'AND' if clause else 'WHERE'} documents.id IN ({placeholders})"
+                values = (*values, *fts_ids)
             rows = connection.execute(
                 f"""
                 SELECT documents.*, books.title AS book_title
@@ -490,4 +686,84 @@ class Library:
                     "snippet": snippet,
                 }
             )
-        return results
+        if limit is None:
+            return results[offset:]
+        return results[offset : offset + limit]
+
+    def export_archive(self, destination: Path) -> Path:
+        destination = destination.expanduser().resolve()
+        if destination.exists():
+            raise BookError(f"Export destination '{destination}' already exists.")
+        self.initialize()
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with zipfile.ZipFile(destination, "x", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.write(self.database_path, "library.sqlite3")
+            if self.documents_root.exists():
+                for path in self.documents_root.rglob("*"):
+                    if path.is_file():
+                        archive.write(path, path.relative_to(self.root).as_posix())
+        return destination
+
+    def restore_archive(self, source: Path, *, replace: bool = False) -> None:
+        source = source.expanduser().resolve()
+        if not source.is_file():
+            raise BookError(f"Backup '{source}' was not found.")
+        if self.root.exists() and not self.root.is_dir():
+            if not replace:
+                raise BookError(f"The data path '{self.root}' is not a directory.")
+        elif self.root.exists() and any(self.root.iterdir()) and not replace:
+            raise BookError("The data directory is not empty. Use --replace to restore over it.")
+        self.root.parent.mkdir(parents=True, exist_ok=True)
+        staging = Path(tempfile.mkdtemp(prefix=f".{self.root.name}.restore-", dir=self.root.parent))
+        backup: Path | None = None
+
+        def discard(path: Path) -> None:
+            try:
+                if path.is_dir() and not path.is_symlink():
+                    shutil.rmtree(path)
+                else:
+                    path.unlink()
+            except FileNotFoundError:
+                pass
+
+        try:
+            try:
+                with zipfile.ZipFile(source) as archive:
+                    names = archive.namelist()
+                    members = [Path(name) for name in names]
+                    if "library.sqlite3" not in names:
+                        raise BookError("Backup does not contain a library database.")
+                    if any(path.is_absolute() or ".." in path.parts for path in members):
+                        raise BookError("Backup contains an unsafe path.")
+                    for path in members:
+                        target = (staging / path).resolve()
+                        try:
+                            target.relative_to(staging)
+                        except ValueError as error:
+                            raise BookError("Backup contains an unsafe path.") from error
+                    archive.extractall(staging)
+            except zipfile.BadZipFile as error:
+                raise BookError(f"Backup '{source}' is not a valid ZIP archive.") from error
+
+            if self.root.exists():
+                if replace:
+                    backup = self.root.parent / f".{self.root.name}.before-restore-{os.getpid()}"
+                    suffix = 1
+                    while backup.exists():
+                        suffix += 1
+                        backup = self.root.parent / f".{self.root.name}.before-restore-{os.getpid()}-{suffix}"
+                    self.root.replace(backup)
+                else:
+                    # An empty destination can be removed so the staged tree can be
+                    # moved into place without leaving stale files behind.
+                    self.root.rmdir()
+            staging.replace(self.root)
+        except Exception:
+            if staging.exists():
+                discard(staging)
+            if backup is not None and backup.exists() and not self.root.exists():
+                backup.replace(self.root)
+            raise
+        else:
+            if backup is not None:
+                discard(backup)

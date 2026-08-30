@@ -42,6 +42,8 @@ book doc add "Linear Algebra" ~/notes/vectors.md
 book doc add "Linear Algebra" ~/downloads/matrices.html
 book doc list "Linear Algebra"
 book doc move 2 1
+book doc add "Linear Algebra" ~/notes --recursive
+book edit "Linear Algebra" --description "Updated references"
 ```
 
 The importer recognizes HTML (`.html`/`.htm`), Markdown (`.md`/`.markdown`), and plain text (`.txt`). Other extensions are imported as text.
@@ -50,6 +52,7 @@ Adding a document copies the source file and locally referenced images, styleshe
 
 ```bash
 book doc refresh 1
+book doc rename 1 "Vectors and matrices"
 ```
 
 ## Read And Search
@@ -64,6 +67,8 @@ book search determinant --book "Linear Algebra"
 
 Theme selection applies to generated Markdown/text pages and is injected into archived HTML pages as well.
 
+Common Markdown tables, nested lists, task lists, strikethrough, and reference links are rendered locally. Links between documents in the same book are routed through the reader.
+
 `book serve` opens the bookshelf; add `--open` to launch it in the default browser. `book open BOOK` opens one book directly.
 
 Use another port when needed:
@@ -73,6 +78,8 @@ book open "Linear Algebra" --port 8989
 ```
 
 HTML documents render with their archived styles in an isolated frame. Script execution, forms, plugins, and automatic remote resource loading are blocked; local archived assets remain available.
+
+Create a portable ZIP backup with `book export PATH` and restore it with `book restore PATH`. Use `--replace` only when intentionally replacing an existing data directory.
 
 ## Security And Archiving
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import html
+import json
 import mimetypes
 import os
 import posixpath
@@ -15,7 +16,7 @@ from urllib.parse import unquote, urlsplit, urlunsplit
 from .errors import BookError
 
 
-TEXTUAL_SUFFIXES = {".css", ".htm", ".html", ".md", ".markdown", ".txt"}
+TEXTUAL_SUFFIXES = {".css", ".htm", ".html", ".json", ".md", ".markdown", ".txt", ".webmanifest"}
 DOCUMENT_TYPES = {
     ".html": "html",
     ".htm": "html",
@@ -23,7 +24,7 @@ DOCUMENT_TYPES = {
     ".markdown": "markdown",
     ".txt": "text",
 }
-SKIPPED_HTML_TAGS = {"script", "iframe", "object", "embed", "base"}
+SKIPPED_HTML_TAGS = {"script", "iframe", "object", "embed", "base", "form"}
 VOID_TAGS = {
     "area",
     "base",
@@ -84,8 +85,14 @@ def _is_asset_attribute(tag: str, attr: str, attrs: dict[str, str | None]) -> bo
         return True
     if tag == "link" and attr == "href":
         rel = (attrs.get("rel") or "").lower()
-        return any(value in rel for value in ("stylesheet", "icon", "preload"))
+        return any(value in rel for value in ("stylesheet", "icon", "preload", "manifest"))
+    if tag in {"image", "use", "feimage"} and attr in {"href", "xlink:href"}:
+        return True
     return False
+
+
+def _is_refresh_meta(tag: str, attrs: dict[str, str | None]) -> bool:
+    return tag == "meta" and (attrs.get("http-equiv") or "").strip().casefold() == "refresh"
 
 
 def _is_unsafe_url(value: str) -> bool:
@@ -124,6 +131,28 @@ def _css_urls(value: str) -> list[str]:
     ]
 
 
+def _manifest_urls(value: str) -> list[str]:
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        return []
+    urls: list[str] = []
+    url_keys = {"href", "scope", "src", "start_url", "url"}
+
+    def visit(node: object, key: str | None = None) -> None:
+        if isinstance(node, dict):
+            for child_key, child in node.items():
+                visit(child, str(child_key).casefold())
+        elif isinstance(node, list):
+            for child in node:
+                visit(child, key)
+        elif isinstance(node, str) and key in url_keys:
+            urls.append(node)
+
+    visit(parsed)
+    return urls
+
+
 def srcset_urls(value: str) -> list[str]:
     urls: list[str] = []
     for candidate in value.split(","):
@@ -152,13 +181,42 @@ def rewrite_css(value: str, origin: Path, output_path: str, mapping: dict[Path, 
     return CSS_IMPORT_PATTERN.sub(replace, value)
 
 
+def rewrite_manifest(value: str, origin: Path, output_path: str, mapping: dict[Path, str]) -> str:
+    try:
+        parsed = json.loads(value)
+    except (TypeError, ValueError):
+        return value
+    url_keys = {"href", "scope", "src", "start_url", "url"}
+
+    def visit(node: object, key: str | None = None) -> object:
+        if isinstance(node, dict):
+            return {child_key: visit(child, str(child_key).casefold()) for child_key, child in node.items()}
+        if isinstance(node, list):
+            return [visit(child, key) for child in node]
+        if isinstance(node, str) and key in url_keys:
+            return rewrite_url(node, origin, output_path, mapping)
+        return node
+
+    return json.dumps(visit(parsed), ensure_ascii=False, indent=2) + "\n"
+
+
 class AssetReferenceParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=False)
         self.urls: list[str] = []
         self.style_depth = 0
+        self.skip_depth = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        normalized = tag.lower()
+        if self.skip_depth:
+            if normalized not in VOID_TAGS:
+                self.skip_depth += 1
+            return
+        if normalized in SKIPPED_HTML_TAGS or _is_refresh_meta(normalized, dict(attrs)):
+            if normalized not in VOID_TAGS:
+                self.skip_depth = 1
+            return
         attributes = dict(attrs)
         for name, value in attrs:
             if value and _is_asset_attribute(tag.lower(), name.lower(), attributes):
@@ -171,9 +229,15 @@ class AssetReferenceParser(HTMLParser):
             self.style_depth += 1
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        normalized = tag.lower()
+        if normalized in SKIPPED_HTML_TAGS or _is_refresh_meta(normalized, dict(attrs)):
+            return
         self.handle_starttag(tag, attrs)
 
     def handle_endtag(self, tag: str) -> None:
+        if self.skip_depth:
+            self.skip_depth -= 1
+            return
         if tag.lower() == "style" and self.style_depth:
             self.style_depth -= 1
 
@@ -234,6 +298,8 @@ class HtmlRewriter(HTMLParser):
                 self.output.append(f"</{tag}>")
             return
         attributes = dict(attrs)
+        if _is_refresh_meta(normalized, attributes):
+            return
         rewritten: list[str] = []
         for name, value in attrs:
             lowered = name.lower()
@@ -256,19 +322,22 @@ class HtmlRewriter(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         normalized = tag.lower()
         if self.skip_depth:
-            self.skip_depth += 1
+            if normalized not in VOID_TAGS:
+                self.skip_depth += 1
             return
         if normalized in SKIPPED_HTML_TAGS:
             if normalized in VOID_TAGS:
                 return
             self.skip_depth = 1
             return
+        if _is_refresh_meta(normalized, dict(attrs)):
+            return
         self._write_tag(tag, attrs)
         if normalized == "style":
             self.style_depth += 1
 
     def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if not self.skip_depth and tag.lower() not in SKIPPED_HTML_TAGS:
+        if not self.skip_depth and tag.lower() not in SKIPPED_HTML_TAGS and not _is_refresh_meta(tag.lower(), dict(attrs)):
             self._write_tag(tag, attrs)
 
     def handle_endtag(self, tag: str) -> None:
@@ -352,6 +421,8 @@ def references_for(path: Path, text: str) -> list[str]:
         return html_references(text)
     if suffix == ".css":
         return _css_urls(text)
+    if suffix in {".json", ".webmanifest"}:
+        return _manifest_urls(text)
     if suffix in {".md", ".markdown"}:
         return markdown_image_urls(text)
     return []
@@ -412,12 +483,14 @@ def archive_document(
     for resource, resource_path in mapping.items():
         output = destination / resource_path
         output.parent.mkdir(parents=True, exist_ok=True)
-        if resource.suffix.lower() in {".css", ".html", ".htm"}:
+        if resource.suffix.lower() in {".css", ".html", ".htm", ".json", ".webmanifest"}:
             resource_text = read_text(resource)
             if resource.suffix.lower() == ".css":
                 resource_text = rewrite_css(resource_text, resource, resource_path, mapping)
-            else:
+            elif resource.suffix.lower() in {".html", ".htm"}:
                 resource_text = rewrite_html(resource_text, resource, resource_path, mapping)
+            else:
+                resource_text = rewrite_manifest(resource_text, resource, resource_path, mapping)
             output.write_text(resource_text, encoding="utf-8")
         else:
             shutil.copy2(resource, output)

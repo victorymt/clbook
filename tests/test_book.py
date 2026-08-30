@@ -12,6 +12,9 @@ from urllib.request import Request, urlopen
 
 from book.cli import main
 from book.database import Library
+from book.errors import BookError
+from book.importer import archive_document
+from book.rendering import markdown_to_html
 from book.web import create_server
 
 
@@ -207,6 +210,7 @@ class BookCliTestCase(unittest.TestCase):
                 book = json.load(response)
             self.assertEqual(book["theme"], "dark")
             self.assertEqual(book["last_document_id"], first_id)
+            self.assertAlmostEqual(book["progress"], 0.21)
             progress_by_document = {document["id"]: document["scroll_ratio"] for document in book["documents"]}
             self.assertEqual(progress_by_document[first_id], 0.42)
         finally:
@@ -237,6 +241,136 @@ class BookCliTestCase(unittest.TestCase):
         self.assertIn("--with-documents", error)
         status, _, error = self.invoke("remove", "Study", "--with-documents")
         self.assertEqual(status, 0, error)
+
+    def test_metadata_bulk_import_stale_detection_and_backup(self) -> None:
+        first = self.sources / "first.txt"
+        second = self.sources / "second.md"
+        first.write_text("First", encoding="utf-8")
+        second.write_text("# Second\n\ncontent", encoding="utf-8")
+        self.add_book()
+        status, _, error = self.invoke("edit", "Study", "--description", "Updated")
+        self.assertEqual(status, 0, error)
+        status, _, error = self.invoke("doc", "add", "Study", str(self.sources), "--recursive")
+        self.assertEqual(status, 0, error)
+        status, _, error = self.invoke("doc", "rename", "1", "First chapter")
+        self.assertEqual(status, 0, error)
+        library = Library(self.data_dir)
+        self.assertEqual(library.list_books()[0]["description"], "Updated")
+        first.write_text("Changed", encoding="utf-8")
+        self.assertTrue(library.is_document_stale(1))
+        backup = self.root / "backup.zip"
+        status, _, error = self.invoke("export", str(backup))
+        self.assertEqual(status, 0, error)
+        restored = Library(self.root / "restored")
+        restored.restore_archive(backup)
+        self.assertEqual(len(restored.list_books()), 1)
+        stale = restored.root / "stale.txt"
+        stale.write_text("remove me", encoding="utf-8")
+        restored.restore_archive(backup, replace=True)
+        self.assertFalse(stale.exists())
+        invalid = self.root / "invalid.zip"
+        invalid.write_bytes(b"not a zip")
+        with self.assertRaisesRegex(BookError, "valid ZIP"):
+            Library(self.root / "invalid-restore").restore_archive(invalid)
+
+    def test_markdown_common_syntax_and_local_document_links(self) -> None:
+        self.assertIn("<table>", markdown_to_html("| A | B |\n| --- | --- |\n| 1 | 2 |"))
+        self.assertIn("<ul><li>outer<ul>", markdown_to_html("- outer\n  - inner"))
+        other = self.sources / "other.md"
+        source = self.sources / "source.md"
+        other.write_text("# Other", encoding="utf-8")
+        source.write_text("[Other][other]\n\n[other]: other.md", encoding="utf-8")
+        self.add_book()
+        first_id = self.add_document("Study", source)
+        second_id = self.add_document("Study", other)
+        library = Library(self.data_dir)
+        server = create_server(library, 0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        try:
+            with urlopen(f"{base}/documents/{first_id}/content") as response:
+                body = response.read().decode("utf-8")
+            self.assertIn(f"/documents/{second_id}/content", body)
+        finally:
+            server.shutdown()
+            thread.join(timeout=2)
+            server.server_close()
+
+    def test_html_removes_forms_refresh_and_archives_svg_resources(self) -> None:
+        source = self.sources / "secure.html"
+        image = self.sources / "picture.png"
+        manifest = self.sources / "site.webmanifest"
+        manifest_icon = self.sources / "manifest-icon.png"
+        image.write_bytes(b"image")
+        manifest_icon.write_bytes(b"manifest image")
+        manifest.write_text('{"icons": [{"src": "manifest-icon.png"}]}', encoding="utf-8")
+        source.write_text(
+            "<html><head><meta http-equiv='refresh' content='0;url=https://example.com'></head>"
+            "<link rel='manifest' href='site.webmanifest'>"
+            "<body><form><input></form><svg><image href='picture.png'/></svg></body></html>",
+            encoding="utf-8",
+        )
+        self.add_book()
+        document_id = self.add_document("Study", source)
+        library = Library(self.data_dir)
+        document, resources = library.document_info(document_id)
+        entry = (library.document_dir(document_id) / document["entry_path"]).read_text(encoding="utf-8")
+        self.assertNotIn("<form", entry)
+        self.assertNotIn("http-equiv='refresh'", entry)
+        self.assertEqual(len(resources), 3)
+        archived_manifest = next(item for item in resources if item["source_path"] == str(manifest.resolve()))
+        manifest_text = (library.document_dir(document_id) / archived_manifest["relative_path"]).read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn('"src": "manifest-icon.png"', manifest_text)
+
+    def test_web_management_and_partial_reader_state_api(self) -> None:
+        library = Library(self.data_dir)
+        server = create_server(library, 0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+
+        def request_json(path: str, payload: dict[str, object] | None = None, method: str = "GET") -> object:
+            data = json.dumps(payload).encode("utf-8") if payload is not None else None
+            request = Request(path, data=data, method=method, headers={"Content-Type": "application/json"} if data else {})
+            with urlopen(request) as response:
+                return json.load(response)
+
+        try:
+            book = request_json(f"{base}/api/books", {"title": "Web book", "description": "D"}, "POST")
+            self.assertEqual(book["title"], "Web book")
+            source = self.sources / "web.txt"
+            source.write_text("Web chapter", encoding="utf-8")
+            document = request_json(
+                f"{base}/api/books/{book['id']}/documents", {"path": str(source)}, "POST"
+            )
+            document_id = document["id"]
+            self.assertNotIn("source_path", document)
+            self.assertNotIn("content", document)
+            updated_book = request_json(
+                f"{base}/api/books/{book['id']}", {"description": "Updated"}, "PATCH"
+            )
+            self.assertEqual(updated_book["documents"][0]["id"], document_id)
+            request_json(f"{base}/api/documents/{document_id}", {"title": "Renamed"}, "PATCH")
+            request_json(f"{base}/api/books/{book['id']}/state", {"last_document_id": document_id, "theme": "dark"}, "PUT")
+            state = request_json(f"{base}/api/books/{book['id']}/state", {"theme": "light"}, "PUT")
+            self.assertEqual(state["last_document_id"], document_id)
+            self.assertEqual(state["theme"], "light")
+            second = self.sources / "second.txt"
+            second.write_text("Second", encoding="utf-8")
+            with self.assertRaises(HTTPError) as error:
+                request_json(
+                    f"{base}/api/books/{book['id']}/documents",
+                    {"path": str(second), "title": "   "},
+                    "POST",
+                )
+            self.assertEqual(error.exception.code, 400)
+        finally:
+            server.shutdown()
+            thread.join(timeout=2)
+            server.server_close()
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ import html
 import re
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlsplit, urlunsplit
 
 from .errors import BookError
 from .importer import read_text
@@ -34,6 +35,10 @@ pre, code { font-family: 'SFMono-Regular', Consolas, monospace; }
 pre { overflow-x: auto; background: #eceeed; border: 1px solid #d7dcd9; padding: 1em; line-height: 1.55; }
 code { background: #eceeed; padding: .1em .25em; }
 pre code { background: transparent; padding: 0; }
+table { width: 100%; margin: 0 0 1.2em; border-collapse: collapse; font-size: .95em; }
+th, td { border: 1px solid #ccd2ce; padding: .45em .6em; text-align: left; vertical-align: top; }
+th { background: #eceeed; font-family: Arial, sans-serif; }
+input[type='checkbox'] { accent-color: #007b75; }
 img, video, audio { display: block; max-width: 100%; height: auto; margin: 1.2em 0; }
 hr { border: 0; border-top: 1px solid #ccd2ce; margin: 2em 0; }
 body[data-theme='dark'] { color: #e7e8e5; background: #171b20; }
@@ -41,6 +46,8 @@ body[data-theme='dark'] h1, body[data-theme='dark'] h2, body[data-theme='dark'] 
 body[data-theme='dark'] a { color: #60c5bb; }
 body[data-theme='dark'] blockquote { color: #bdc6c3; border-color: #71817d; }
 body[data-theme='dark'] pre, body[data-theme='dark'] code { background: #252b31; border-color: #3d474e; }
+body[data-theme='dark'] th, body[data-theme='dark'] td { border-color: #3d474e; }
+body[data-theme='dark'] th { background: #252b31; }
 @media (max-width: 640px) { body { font-size: 17px; } main { width: min(100% - 28px, 780px); padding-top: 32px; } }
 """
 
@@ -107,7 +114,7 @@ def _safe_url(value: str) -> str:
     return value
 
 
-def render_inline(value: str) -> str:
+def render_inline(value: str, references: dict[str, str] | None = None) -> str:
     tokens: list[str] = []
 
     def stash(fragment: str) -> str:
@@ -147,13 +154,33 @@ def render_inline(value: str) -> str:
         lambda match: f"<em>{match.group(1) or match.group(2)}</em>",
         escaped,
     )
+    escaped = re.sub(r"~~(.+?)~~", lambda match: f"<del>{match.group(1)}</del>", escaped)
+    if references:
+        def reference_link(match: re.Match[str]) -> str:
+            destination = references.get(match.group(2).casefold())
+            if destination is None:
+                return match.group(0)
+            label = html.escape(html.unescape(match.group(1)))
+            return stash(
+                f'<a href="{html.escape(_safe_url(destination), quote=True)}" target="_blank" rel="noopener noreferrer">{label}</a>'
+            )
+
+        escaped = re.sub(r"(?<!!)\[([^\]]+)\]\[([^\]]+)\]", reference_link, escaped)
     for index, token in enumerate(tokens):
         escaped = escaped.replace(f"\x00BOOKTOKEN{index}\x00", token)
     return escaped
 
 
 def markdown_to_html(markdown: str) -> str:
-    lines = markdown.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    raw_lines = markdown.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    references: dict[str, str] = {}
+    lines: list[str] = []
+    for line in raw_lines:
+        definition = re.match(r"^\s{0,3}\[([^\]]+)\]:\s*(\S+)(?:\s+.*)?$", line)
+        if definition:
+            references[definition.group(1).casefold()] = definition.group(2)
+        else:
+            lines.append(line)
     output: list[str] = []
     paragraph: list[str] = []
     index = 0
@@ -161,7 +188,7 @@ def markdown_to_html(markdown: str) -> str:
     def flush_paragraph() -> None:
         if paragraph:
             joined = " ".join(piece.strip() for piece in paragraph)
-            output.append(f"<p>{render_inline(joined)}</p>")
+            output.append(f"<p>{render_inline(joined, references)}</p>")
             paragraph.clear()
 
     while index < len(lines):
@@ -187,7 +214,7 @@ def markdown_to_html(markdown: str) -> str:
         if heading:
             flush_paragraph()
             level = len(heading.group(1))
-            output.append(f"<h{level}>{render_inline(heading.group(2))}</h{level}>")
+            output.append(f"<h{level}>{render_inline(heading.group(2), references)}</h{level}>")
             index += 1
             continue
         if re.match(r"^\s{0,3}([-*_])(?:\s*\1){2,}\s*$", line):
@@ -203,26 +230,96 @@ def markdown_to_html(markdown: str) -> str:
                 index += 1
             output.append(f"<blockquote>{markdown_to_html(chr(10).join(quote))}</blockquote>")
             continue
-        unordered = re.match(r"^\s*[-+*]\s+(.+)$", line)
-        ordered = re.match(r"^\s*\d+[.)]\s+(.+)$", line)
-        if unordered or ordered:
+        table_header = _table_cells(line)
+        if index + 1 < len(lines) and table_header and _is_table_separator(lines[index + 1]):
             flush_paragraph()
-            tag = "ul" if unordered else "ol"
-            items: list[str] = []
-            pattern = r"^\s*[-+*]\s+(.+)$" if unordered else r"^\s*\d+[.)]\s+(.+)$"
-            while index < len(lines):
-                match = re.match(pattern, lines[index])
-                if not match:
-                    break
-                items.append(f"<li>{render_inline(match.group(1))}</li>")
+            output.append(_render_table(table_header, lines, index, references))
+            index += 2
+            while index < len(lines) and _table_cells(lines[index]):
                 index += 1
-            output.append(f"<{tag}>{''.join(items)}</{tag}>")
+            continue
+        list_match = _list_match(line)
+        if list_match:
+            flush_paragraph()
+            rendered, index = _render_list(
+                lines, index, len(list_match.group(1)), list_match.group(2)[0].isdigit(), references
+            )
+            output.append(rendered)
             continue
         paragraph.append(line)
         index += 1
 
     flush_paragraph()
     return "\n".join(output)
+
+
+def _table_cells(line: str) -> list[str]:
+    stripped = line.strip()
+    if "|" not in stripped:
+        return []
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|"):
+        stripped = stripped[:-1]
+    cells = [cell.strip() for cell in stripped.split("|")]
+    return cells if len(cells) > 1 else []
+
+
+def _is_table_separator(line: str) -> bool:
+    cells = _table_cells(line)
+    return bool(cells) and all(re.fullmatch(r":?-{3,}:?", cell) for cell in cells)
+
+
+def _render_table(header: list[str], lines: list[str], index: int, references: dict[str, str]) -> str:
+    rows: list[list[str]] = []
+    cursor = index + 2
+    while cursor < len(lines):
+        cells = _table_cells(lines[cursor])
+        if not cells:
+            break
+        rows.append(cells)
+        cursor += 1
+    head = "<tr>" + "".join(f"<th>{render_inline(cell, references)}</th>" for cell in header) + "</tr>"
+    body = "".join(
+        "<tr>" + "".join(f"<td>{render_inline(cell, references)}</td>" for cell in row) + "</tr>"
+        for row in rows
+    )
+    return f"<table><thead>{head}</thead><tbody>{body}</tbody></table>"
+
+
+def _list_match(line: str) -> re.Match[str] | None:
+    return re.match(r"^(\s*)([-+*]|\d+[.)])\s+(.+)$", line)
+
+
+def _render_list(
+    lines: list[str], index: int, base_indent: int, ordered: bool, references: dict[str, str]
+) -> tuple[str, int]:
+    tag = "ol" if ordered else "ul"
+    items: list[str] = []
+    while index < len(lines):
+        match = _list_match(lines[index])
+        if not match or len(match.group(1)) != base_indent:
+            break
+        is_ordered = match.group(2)[0].isdigit()
+        if is_ordered != ordered:
+            break
+        content = match.group(3)
+        task = re.match(r"\[([ xX])\]\s+(.+)$", content)
+        if task:
+            checked = " checked" if task.group(1).casefold() == "x" else ""
+            content_html = f'<label><input type="checkbox" disabled{checked}> {render_inline(task.group(2), references)}</label>'
+        else:
+            content_html = render_inline(content, references)
+        index += 1
+        nested = ""
+        if index < len(lines):
+            nested_match = _list_match(lines[index])
+            if nested_match and len(nested_match.group(1)) > base_indent:
+                nested, index = _render_list(
+                    lines, index, len(nested_match.group(1)), nested_match.group(2)[0].isdigit(), references
+                )
+        items.append(f"<li>{content_html}{nested}</li>")
+    return f"<{tag}>{''.join(items)}</{tag}>", index
 
 
 def document_shell(title: str, body: str, theme: str) -> str:
@@ -265,13 +362,65 @@ def apply_html_theme(source: str, theme: str) -> str:
     return themed
 
 
-def render_document(document: Any, bundle_dir: Path, theme: str) -> str:
+def rewrite_document_url(value: str, origin: Path, document_links: dict[str, int]) -> str:
+    parts = urlsplit(value.strip())
+    if not parts.path or parts.scheme or parts.netloc or parts.path.startswith("/"):
+        return value
+    target = (origin.parent / unquote(parts.path)).resolve()
+    document_id = document_links.get(str(target))
+    if document_id is None:
+        return value
+    return urlunsplit(("", "", f"/documents/{document_id}/content", parts.query, parts.fragment))
+
+
+def rewrite_document_links(markdown: str, origin: Path, document_links: dict[str, int]) -> str:
+    pattern = re.compile(r"(?P<prefix>!?)\[(?P<label>[^\]]+)\]\((?P<target>[^)\s]+)(?P<rest>[^)]*)\)")
+
+    def replace(match: re.Match[str]) -> str:
+        if match.group("prefix") == "!":
+            return match.group(0)
+        target = rewrite_document_url(match.group("target"), origin, document_links)
+        return f"[{match.group('label')}]({target}{match.group('rest')})"
+
+    rewritten = pattern.sub(replace, markdown)
+    definition_pattern = re.compile(
+        r"^(?P<prefix>\s{0,3}\[[^\]]+\]:\s*)(?P<target>\S+)(?P<rest>.*)$",
+        re.MULTILINE,
+    )
+
+    def replace_definition(match: re.Match[str]) -> str:
+        target = rewrite_document_url(match.group("target"), origin, document_links)
+        return f"{match.group('prefix')}{target}{match.group('rest')}"
+
+    return definition_pattern.sub(replace_definition, rewritten)
+
+
+def rewrite_html_document_links(source: str, origin: Path, document_links: dict[str, int]) -> str:
+    pattern = re.compile(r"(<a\b[^>]*?\bhref\s*=\s*)([\"'])(.*?)(\2)", re.I | re.S)
+
+    def replace(match: re.Match[str]) -> str:
+        target = rewrite_document_url(match.group(3), origin, document_links)
+        return f"{match.group(1)}{match.group(2)}{target}{match.group(4)}"
+
+    return pattern.sub(replace, source)
+
+
+def render_document(
+    document: Any,
+    bundle_dir: Path,
+    theme: str,
+    document_links: dict[str, int] | None = None,
+) -> str:
     entry = bundle_dir / document["entry_path"]
     if not entry.is_file():
         raise BookError("The archived document file is missing. Run 'book doc refresh' to restore it.")
     source = read_text(entry)
+    document_links = document_links or {}
+    origin = Path(document["source_path"]).resolve()
     if document["document_type"] == "html":
+        source = rewrite_html_document_links(source, origin, document_links)
         return apply_html_theme(source, theme)
     if document["document_type"] == "markdown":
+        source = rewrite_document_links(source, origin, document_links)
         return document_shell(document["title"], markdown_to_html(source), theme)
     return document_shell(document["title"], f"<pre>{html.escape(source)}</pre>", theme)

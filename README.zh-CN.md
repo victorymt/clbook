@@ -42,6 +42,8 @@ book doc add "线性代数" ~/notes/vectors.md
 book doc add "线性代数" ~/downloads/matrices.html
 book doc list "线性代数"
 book doc move 2 1
+book doc add "线性代数" ~/notes --recursive
+book edit "线性代数" --description "更新后的参考资料"
 ```
 
 导入器支持 HTML（`.html`/`.htm`）、Markdown（`.md`/`.markdown`）和纯文本（`.txt`）。其他扩展名会按文本导入。
@@ -52,6 +54,7 @@ book doc move 2 1
 
 ```bash
 book doc refresh 1
+book doc rename 1 "向量与矩阵"
 ```
 
 ## 阅读与搜索
@@ -66,6 +69,8 @@ book search determinant --book "线性代数"
 
 主题选择会应用于 Markdown/文本页面，也会注入到归档的 HTML 页面中。
 
+阅读器支持常见的 Markdown 表格、嵌套列表、任务列表、删除线和引用式链接。同一本书中的文档链接会路由到对应章节。
+
 `book serve` 用于打开书架；添加 `--open` 可自动启动默认浏览器。`book open BOOK` 可以直接打开指定书籍。
 
 端口被占用时，可以指定其他端口：
@@ -77,6 +82,8 @@ book open "线性代数" --port 8989
 ## 安全与归档
 
 HTML 文档会在隔离页面中保留归档后的样式。脚本、表单、插件和远程资源的自动加载会被阻止；已归档的本地资源仍可正常使用。
+
+可以使用 `book export PATH` 创建可迁移的 ZIP 备份，再用 `book restore PATH` 恢复。只有在明确要覆盖现有资料库时才使用 `--replace`。
 
 出于安全考虑，只会归档源文件所在目录树内的资源；指向目录树外的引用会保持原样，不会被复制。
 

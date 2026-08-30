@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import re
+import shutil
 import webbrowser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -12,6 +13,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from .database import Library
 from .errors import BookError
+from .importer import archive_document, document_type_for, read_text, replace_archive, suggested_title
 from .rendering import render_document
 
 
@@ -40,6 +42,23 @@ CONTENT_SECURITY_POLICY = (
 
 def static_text(name: str) -> str:
     return files("book").joinpath("static", name).read_text(encoding="utf-8")
+
+
+def document_payload(library: Library, document: object, *, stale: bool | None = None) -> dict[str, object]:
+    """Return document metadata safe to expose through the JSON API."""
+    payload = dict(document)  # type: ignore[arg-type]
+    source_path = payload.pop("source_path", None)
+    payload.pop("source_mtime", None)
+    payload.pop("source_size", None)
+    payload.pop("content", None)
+    if stale is None and source_path is not None:
+        try:
+            stale = library.is_document_stale(int(payload["id"]))
+        except BookError:
+            stale = False
+    if stale is not None:
+        payload["source_stale"] = stale
+    return payload
 
 
 def make_handler(library: Library) -> type[BaseHTTPRequestHandler]:
@@ -92,7 +111,8 @@ def make_handler(library: Library) -> type[BaseHTTPRequestHandler]:
             try:
                 self.handle_get()
             except BookError as error:
-                self.fail(HTTPStatus.NOT_FOUND, str(error))
+                status = HTTPStatus.BAD_REQUEST if urlparse(self.path).path == "/api/search" else HTTPStatus.NOT_FOUND
+                self.fail(status, str(error))
             except BrokenPipeError:
                 return
             except Exception:
@@ -128,13 +148,23 @@ def make_handler(library: Library) -> type[BaseHTTPRequestHandler]:
                 if not values:
                     raise BookError("Search query cannot be empty.")
                 book = query.get("book", [None])[0]
-                self.send_json(library.search(values[0], book))
+                try:
+                    limit = int(query.get("limit", ["100"])[0])
+                    offset = int(query.get("offset", ["0"])[0])
+                except ValueError as error:
+                    raise BookError("Search limit and offset must be integers.") from error
+                self.send_json(library.search(values[0], book, limit=limit, offset=offset))
                 return
             match = re.fullmatch(r"/documents/(\d+)/content", path)
             if match:
                 document, _ = library.document_info(int(match.group(1)))
-                theme = query.get("theme", ["light"])[0]
-                document_html = render_document(document, library.document_dir(document["id"]), theme)
+                theme = query.get("theme", [library.get_book_for_web(int(document["book_id"]))["theme"]])[0]
+                document_html = render_document(
+                    document,
+                    library.document_dir(document["id"]),
+                    theme,
+                    library.document_links(int(document["book_id"])),
+                )
                 self.send_bytes(
                     HTTPStatus.OK,
                     document_html.encode("utf-8"),
@@ -182,18 +212,53 @@ def make_handler(library: Library) -> type[BaseHTTPRequestHandler]:
             except Exception:
                 self.fail(HTTPStatus.INTERNAL_SERVER_ERROR, "Unable to update the reader state.")
 
+        def do_PATCH(self) -> None:
+            try:
+                self.handle_patch()
+            except BookError as error:
+                self.fail(HTTPStatus.BAD_REQUEST, str(error))
+            except BrokenPipeError:
+                return
+            except Exception:
+                self.fail(HTTPStatus.INTERNAL_SERVER_ERROR, "Unable to update the library.")
+
+        def do_POST(self) -> None:
+            try:
+                self.handle_post()
+            except BookError as error:
+                self.fail(HTTPStatus.BAD_REQUEST, str(error))
+            except BrokenPipeError:
+                return
+            except Exception:
+                self.fail(HTTPStatus.INTERNAL_SERVER_ERROR, "Unable to update the library.")
+
+        def do_DELETE(self) -> None:
+            try:
+                self.handle_delete()
+            except BookError as error:
+                self.fail(HTTPStatus.BAD_REQUEST, str(error))
+            except BrokenPipeError:
+                return
+            except Exception:
+                self.fail(HTTPStatus.INTERNAL_SERVER_ERROR, "Unable to update the library.")
+
         def handle_put(self) -> None:
             path = urlparse(self.path).path
             body = self.parse_body()
             match = re.fullmatch(r"/api/books/(\d+)/state", path)
             if match:
+                kwargs: dict[str, object] = {}
                 last_document_id = body.get("last_document_id")
-                if last_document_id is not None and (isinstance(last_document_id, bool) or not isinstance(last_document_id, int)):
+                if "last_document_id" in body and last_document_id is not None and (isinstance(last_document_id, bool) or not isinstance(last_document_id, int)):
                     raise BookError("last_document_id must be an integer or null.")
+                if "last_document_id" in body:
+                    kwargs["last_document_id"] = last_document_id
                 theme = body.get("theme")
-                if theme is not None and not isinstance(theme, str):
+                if "theme" in body and theme is not None and not isinstance(theme, str):
                     raise BookError("theme must be a string.")
-                self.send_json(library.update_reader_state(int(match.group(1)), last_document_id, theme))
+                if "theme" in body:
+                    kwargs["theme"] = theme
+                self.send_json(library.update_reader_state(int(match.group(1)), **kwargs))
                 return
             match = re.fullmatch(r"/api/documents/(\d+)/progress", path)
             if match:
@@ -211,6 +276,112 @@ def make_handler(library: Library) -> type[BaseHTTPRequestHandler]:
                     raise BookError("document_ids must be an array of integers.")
                 rows = library.reorder_documents(int(match.group(1)), document_ids)
                 self.send_json([dict(row) for row in rows])
+                return
+            self.fail(HTTPStatus.NOT_FOUND, "Route not found.")
+
+        def handle_patch(self) -> None:
+            path = urlparse(self.path).path
+            body = self.parse_body()
+            match = re.fullmatch(r"/api/books/(\d+)", path)
+            if match:
+                title = body.get("title")
+                description = body.get("description")
+                if title is not None and not isinstance(title, str):
+                    raise BookError("title must be a string.")
+                if description is not None and not isinstance(description, str):
+                    raise BookError("description must be a string.")
+                book_id = int(match.group(1))
+                library.update_book(str(book_id), title=title, description=description)
+                self.send_json(library.get_book_for_web(book_id))
+                return
+            match = re.fullmatch(r"/api/documents/(\d+)", path)
+            if match:
+                title = body.get("title")
+                if not isinstance(title, str):
+                    raise BookError("title must be a string.")
+                self.send_json(document_payload(library, library.rename_document(int(match.group(1)), title)))
+                return
+            self.fail(HTTPStatus.NOT_FOUND, "Route not found.")
+
+        def handle_post(self) -> None:
+            path = urlparse(self.path).path
+            refresh_match = re.fullmatch(r"/api/documents/(\d+)/refresh", path)
+            if refresh_match:
+                document, _ = library.document_info(int(refresh_match.group(1)))
+                source = Path(document["source_path"])
+                if not source.is_file():
+                    raise BookError("Original source is unavailable; the archived copy was not changed.")
+                result = replace_archive(source, library.document_dir(document["id"]))
+                updated = library.update_document_import(
+                    document["id"], result.entry_path, result.document_type, result.content, result.resources
+                )
+                self.send_json(document_payload(library, updated))
+                return
+            body = self.parse_body()
+            if path == "/api/books":
+                title = body.get("title")
+                description = body.get("description", "")
+                if not isinstance(title, str) or not isinstance(description, str):
+                    raise BookError("title and description must be strings.")
+                self.send_json(dict(library.add_book(title, description)), HTTPStatus.CREATED)
+                return
+            match = re.fullmatch(r"/api/books/(\d+)/documents", path)
+            if match:
+                source_value = body.get("path")
+                title_value = body.get("title")
+                resource_root_value = body.get("resource_root")
+                if not isinstance(source_value, str):
+                    raise BookError("path must be a string.")
+                if title_value is not None and not isinstance(title_value, str):
+                    raise BookError("title must be a string.")
+                if resource_root_value is not None and not isinstance(resource_root_value, str):
+                    raise BookError("resource_root must be a string.")
+                source = Path(source_value).expanduser().resolve()
+                if not source.is_file():
+                    raise BookError(f"'{source}' is not a readable file.")
+                kind = document_type_for(source)
+                source_content = read_text(source)
+                if title_value is not None:
+                    title = title_value.strip()
+                    if not title:
+                        raise BookError("Document title cannot be empty.")
+                else:
+                    title = suggested_title(source, kind, source_content)
+                document, archive_dir = library.insert_document(
+                    str(int(match.group(1))), title, source, kind, ""
+                )
+                try:
+                    result = archive_document(
+                        source,
+                        archive_dir,
+                        Path(resource_root_value).expanduser().resolve() if resource_root_value else None,
+                    )
+                    document = library.finish_document_import(
+                        document["id"], result.entry_path, result.resources, result.content
+                    )
+                except Exception:
+                    shutil.rmtree(archive_dir, ignore_errors=True)
+                    try:
+                        library.remove_document(document["id"])
+                    except BookError:
+                        pass
+                    raise
+                self.send_json(document_payload(library, document), HTTPStatus.CREATED)
+                return
+            self.fail(HTTPStatus.NOT_FOUND, "Route not found.")
+
+        def handle_delete(self) -> None:
+            path = urlparse(self.path).path
+            if (match := re.fullmatch(r"/api/books/(\d+)", path)):
+                query = parse_qs(urlparse(self.path).query)
+                with_documents = query.get("with_documents", ["false"])[0].casefold() in {"1", "true", "yes"}
+                self.send_json(dict(library.remove_book(match.group(1), with_documents)))
+                return
+            if (match := re.fullmatch(r"/api/documents/(\d+)", path)):
+                document, _ = library.document_info(match.group(1))
+                stale = library.is_document_stale(int(document["id"]))
+                removed = library.remove_document(match.group(1))
+                self.send_json(document_payload(library, removed, stale=stale))
                 return
             self.fail(HTTPStatus.NOT_FOUND, "Route not found.")
 

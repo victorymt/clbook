@@ -38,9 +38,13 @@ function escapeHtml(value) {
   return String(value).replace(/[&<>'"]/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[character]));
 }
 
-function setLocation(bookId, documentId) {
+function setLocation(bookId, documentId, replace = false) {
   const suffix = bookId ? `#book=${bookId}${documentId ? `&doc=${documentId}` : ''}` : '';
-  history.replaceState(null, '', `${location.pathname}${suffix}`);
+  // The shelf is always rooted at `/`; retaining a `/books/<id>` pathname
+  // would make a browser refresh reopen a deleted book.
+  const basePath = bookId ? location.pathname : '/';
+  const url = `${basePath}${suffix}`;
+  (replace ? history.replaceState : history.pushState).call(history, null, '', url);
 }
 
 function initialRoute() {
@@ -67,7 +71,7 @@ function renderLibrary(books) {
     <main class="library">
       <header class="library-header">
         <div class="library-heading"><span class="library-kicker">Your shelves</span><h1>book</h1></div>
-        <div class="book-count"><strong>${books.length}</strong><span>${bookLabel}</span></div>
+        <div class="library-header-actions"><button id="add-book" class="primary-button" type="button">New book</button><div class="book-count"><strong>${books.length}</strong><span>${bookLabel}</span></div></div>
       </header>
       ${books.length ? `<section class="book-list" aria-label="Books">${books.map((book, index) => `
         <button class="book-row" type="button" data-book-id="${book.id}">
@@ -75,12 +79,25 @@ function renderLibrary(books) {
           <span class="book-copy"><span class="book-title">${escapeHtml(book.title)}</span>${book.description ? `<span class="book-description">${escapeHtml(book.description)}</span>` : '<span class="book-description book-description-empty">No description</span>'}</span>
           <span class="book-documents"><strong>${book.document_count}</strong><span>${book.document_count === 1 ? 'chapter' : 'chapters'}</span></span>
           <span class="book-arrow" aria-hidden="true">&rarr;</span>
-        </button>`).join('')}</section>` : '<section class="empty"><strong>No books yet</strong><span>Add a book from the command line to see it here.</span></section>'}
+        </button>`).join('')}</section>` : '<section class="empty"><strong>No books yet</strong><span>Create a book to start building your shelf.</span></section>'}
     </main>`;
   app.querySelectorAll('[data-book-id]').forEach((button) => {
     button.addEventListener('click', () => loadBook(Number(button.dataset.bookId)));
   });
-  setLocation(null, null);
+  setLocation(null, null, true);
+  app.querySelector('#add-book')?.addEventListener('click', createBook);
+}
+
+async function createBook() {
+  const title = window.prompt('Book title');
+  if (!title?.trim()) return;
+  const description = window.prompt('Description (optional)', '') || '';
+  try {
+    const book = await request('/api/books', { method: 'POST', body: JSON.stringify({ title: title.trim(), description }) });
+    await loadBook(book.id);
+  } catch (error) {
+    renderStatus('Unable to create this book', error.message);
+  }
 }
 
 function renderReader() {
@@ -92,6 +109,7 @@ function renderReader() {
       <header class="reader-header">
         <button id="back" class="icon-button" type="button" title="Back to books" aria-label="Back to books">&larr;</button>
         <div class="reader-title-group"><span class="reader-kicker">Reading</span><h1>${escapeHtml(book.title)}</h1><p class="subtitle">${escapeHtml(book.description || `${documents.length} ${chapterLabel}`)}</p></div>
+        <div class="reader-actions"><button id="edit-book" class="icon-button" type="button" title="Edit book" aria-label="Edit book">✎</button><button id="delete-book" class="icon-button" type="button" title="Delete book" aria-label="Delete book">×</button></div>
         <label class="theme-picker"><span>Theme</span><select id="theme" aria-label="Theme"><option value="light">Light</option><option value="dark">Dark</option></select></label>
         <div class="progress-wrap" aria-label="Reading progress"><div class="progress-copy"><span>Progress</span><strong id="progress-label">0%</strong></div><div class="progress-track" aria-hidden="true"><span id="progress-bar"></span></div></div>
       </header>
@@ -112,8 +130,36 @@ function renderReader() {
     if (state.currentDocumentId) selectDocument(state.currentDocumentId, false);
   });
   app.querySelector('#back').addEventListener('click', showLibrary);
+  app.querySelector('#edit-book').addEventListener('click', editBook);
+  app.querySelector('#delete-book').addEventListener('click', deleteBook);
   bindSearch();
   bindChapters();
+  updateBookProgress();
+}
+
+async function editBook() {
+  if (!state.book) return;
+  const title = window.prompt('Book title', state.book.title);
+  if (!title?.trim()) return;
+  const description = window.prompt('Description (optional)', state.book.description || '');
+  if (description === null) return;
+  try {
+    state.book = await request(`/api/books/${state.book.id}`, { method: 'PATCH', body: JSON.stringify({ title: title.trim(), description }) });
+    renderReader();
+    if (state.currentDocumentId) selectDocument(state.currentDocumentId, false);
+  } catch (error) {
+    renderStatus('Unable to edit this book', error.message);
+  }
+}
+
+async function deleteBook() {
+  if (!state.book || !window.confirm(`Delete “${state.book.title}” and its archived chapters?`)) return;
+  try {
+    await request(`/api/books/${state.book.id}?with_documents=true`, { method: 'DELETE' });
+    await showLibrary();
+  } catch (error) {
+    renderStatus('Unable to delete this book', error.message);
+  }
 }
 
 function chapterItem(document) {
@@ -121,9 +167,10 @@ function chapterItem(document) {
   const progress = Math.round(Math.max(0, Math.min(1, Number(document.scroll_ratio || 0))) * 100);
   const first = document.position <= 1 ? ' disabled' : '';
   const last = document.position >= state.book.documents.length ? ' disabled' : '';
+  const stale = document.source_stale ? ' <span class="toc-stale" title="Source file changed">●</span>' : '';
   return `<li class="toc-item${selected}" draggable="true" data-document-id="${document.id}">
-    <button class="toc-open" type="button"${document.id === state.currentDocumentId ? ' aria-current="page"' : ''}><span class="toc-position">${String(document.position).padStart(2, '0')}</span><span class="toc-title">${escapeHtml(document.title)}</span><span class="toc-progress" aria-label="${progress}% complete"><span style="width: ${progress}%"></span></span></button>
-    <span class="move-controls"><button class="move-button" type="button" data-move="-1" title="Move chapter up" aria-label="Move chapter up"${first}>&#8593;</button><button class="move-button" type="button" data-move="1" title="Move chapter down" aria-label="Move chapter down"${last}>&#8595;</button></span>
+    <button class="toc-open" type="button"${document.id === state.currentDocumentId ? ' aria-current="page"' : ''}><span class="toc-position">${String(document.position).padStart(2, '0')}</span><span class="toc-title">${escapeHtml(document.title)}${stale}</span><span class="toc-progress" aria-label="${progress}% complete"><span style="width: ${progress}%"></span></span></button>
+    <span class="move-controls"><button class="move-button" type="button" data-move="-1" title="Move chapter up" aria-label="Move chapter up"${first}>&#8593;</button><button class="move-button" type="button" data-move="1" title="Move chapter down" aria-label="Move chapter down"${last}>&#8595;</button><button class="move-button" type="button" data-rename title="Rename chapter" aria-label="Rename chapter">✎</button><button class="move-button" type="button" data-refresh title="Refresh chapter" aria-label="Refresh chapter">↻</button></span>
   </li>`;
 }
 
@@ -134,6 +181,8 @@ function bindChapters() {
     const documentId = Number(item.dataset.documentId);
     item.querySelector('.toc-open').addEventListener('click', () => selectDocument(documentId));
     item.querySelectorAll('[data-move]').forEach((button) => button.addEventListener('click', () => moveChapter(documentId, Number(button.dataset.move))));
+    item.querySelector('[data-rename]')?.addEventListener('click', () => renameChapter(documentId));
+    item.querySelector('[data-refresh]')?.addEventListener('click', () => refreshChapter(documentId));
     item.addEventListener('dragstart', () => { state.dragDocumentId = documentId; item.classList.add('dragging'); });
     item.addEventListener('dragend', () => { state.dragDocumentId = null; item.classList.remove('dragging'); });
     item.addEventListener('dragover', (event) => event.preventDefault());
@@ -151,12 +200,40 @@ function bindChapters() {
   if (next) next.addEventListener('click', () => adjacentDocument(1));
 }
 
+async function renameChapter(documentId) {
+  const document = state.book?.documents.find((item) => item.id === documentId);
+  if (!document) return;
+  const title = window.prompt('Chapter title', document.title);
+  if (!title?.trim()) return;
+  try {
+    await request(`/api/documents/${documentId}`, { method: 'PATCH', body: JSON.stringify({ title: title.trim() }) });
+    await loadBook(state.book.id, state.currentDocumentId);
+  } catch (error) {
+    renderStatus('Unable to rename this chapter', error.message);
+  }
+}
+
+async function refreshChapter(documentId) {
+  if (!window.confirm('Refresh this chapter from its source file?')) return;
+  try {
+    await request(`/api/documents/${documentId}/refresh`, { method: 'POST', body: JSON.stringify({}) });
+    await loadBook(state.book.id, documentId);
+  } catch (error) {
+    renderStatus('Unable to refresh this chapter', error.message);
+  }
+}
+
 async function persistOrder() {
   const ids = [...app.querySelectorAll('.toc-item')].map((item) => Number(item.dataset.documentId));
-  await request(`/api/books/${state.book.id}/order`, { method: 'PUT', body: JSON.stringify({ document_ids: ids }) });
-  state.book = await request(`/api/books/${state.book.id}`);
-  renderReader();
-  selectDocument(state.currentDocumentId, false);
+  try {
+    await request(`/api/books/${state.book.id}/order`, { method: 'PUT', body: JSON.stringify({ document_ids: ids }) });
+    state.book = await request(`/api/books/${state.book.id}`);
+    renderReader();
+    selectDocument(state.currentDocumentId, false);
+  } catch (error) {
+    renderStatus('Unable to save chapter order', error.message);
+    await loadBook(state.book.id, state.currentDocumentId);
+  }
 }
 
 async function moveChapter(documentId, direction) {
@@ -165,10 +242,15 @@ async function moveChapter(documentId, direction) {
   const target = index + direction;
   if (target < 0 || target >= ids.length) return;
   [ids[index], ids[target]] = [ids[target], ids[index]];
-  await request(`/api/books/${state.book.id}/order`, { method: 'PUT', body: JSON.stringify({ document_ids: ids }) });
-  state.book = await request(`/api/books/${state.book.id}`);
-  renderReader();
-  selectDocument(state.currentDocumentId, false);
+  try {
+    await request(`/api/books/${state.book.id}/order`, { method: 'PUT', body: JSON.stringify({ document_ids: ids }) });
+    state.book = await request(`/api/books/${state.book.id}`);
+    renderReader();
+    selectDocument(state.currentDocumentId, false);
+  } catch (error) {
+    renderStatus('Unable to move this chapter', error.message);
+    await loadBook(state.book.id, state.currentDocumentId);
+  }
 }
 
 function bindSearch() {
@@ -211,7 +293,7 @@ async function selectDocument(documentId, saveState = true) {
   if (!frame) return;
   if (saveState) await persistReaderState(state.book.id, documentId, state.book.theme);
   if (selectionGeneration !== state.progressGeneration || state.currentDocumentId !== documentId) return;
-  setLocation(state.book.id, documentId);
+  setLocation(state.book.id, documentId, !saveState);
   const progressGeneration = state.progressGeneration;
   frame.onload = () => restoreProgress(document, frame, progressGeneration);
   frame.src = `/documents/${documentId}/content?theme=${encodeURIComponent(state.book.theme)}`;
@@ -228,10 +310,13 @@ function restoreProgress(document, frame, progressGeneration) {
     const maxScroll = Math.max(0, scrollElement.scrollHeight - scrollElement.clientHeight);
     scrollElement.scrollTop = maxScroll * Number(document.scroll_ratio || 0);
     updateProgressLabel(Number(document.scroll_ratio || 0));
+    updateBookProgress();
     scrollElement.addEventListener('scroll', () => {
       const maximum = Math.max(0, scrollElement.scrollHeight - scrollElement.clientHeight);
       const ratio = maximum ? scrollElement.scrollTop / maximum : 0;
       updateProgressLabel(ratio);
+      document.scroll_ratio = ratio;
+      updateBookProgress();
       window.clearTimeout(state.progressTimer);
       const generation = state.progressGeneration;
       state.progressTimer = window.setTimeout(() => {
@@ -257,12 +342,28 @@ function updateProgressLabel(ratio) {
   if (tocBar) tocBar.style.width = `${bounded * 100}%`;
 }
 
+function updateBookProgress() {
+  const documents = state.book?.documents || [];
+  const ratio = documents.length
+    ? documents.reduce((sum, item) => sum + Number(item.scroll_ratio || 0), 0) / documents.length
+    : 0;
+  const label = app.querySelector('#progress-label');
+  const bar = app.querySelector('#progress-bar');
+  const bounded = Math.max(0, Math.min(1, ratio));
+  if (label) label.textContent = `${Math.round(bounded * 100)}%`;
+  if (bar) bar.style.width = `${bounded * 100}%`;
+}
+
 function saveProgress(bookId, documentId, ratio) {
   request(`/api/documents/${documentId}/progress`, { method: 'PUT', body: JSON.stringify({ scroll_ratio: ratio }) }).catch(() => {});
   const document = state.book?.id === bookId
     ? state.book.documents.find((item) => item.id === documentId)
     : null;
   if (document) document.scroll_ratio = ratio;
+  if (state.book?.documents.length) {
+    state.book.progress = state.book.documents.reduce((sum, item) => sum + Number(item.scroll_ratio || 0), 0) / state.book.documents.length;
+    updateBookProgress();
+  }
 }
 
 function updateNavigation() {
@@ -291,7 +392,8 @@ async function loadBook(bookId, requestedDocumentId = null) {
     const validLast = state.book.documents.some((document) => document.id === state.book.last_document_id);
     state.currentDocumentId = validRequested ? requestedDocumentId : (validLast ? state.book.last_document_id : state.book.documents[0]?.id || null);
     renderReader();
-    if (state.currentDocumentId) selectDocument(state.currentDocumentId);
+    if (state.currentDocumentId) selectDocument(state.currentDocumentId, false);
+    else setLocation(state.book.id, null, true);
   } catch (error) {
     renderStatus('Unable to open this book', error.message);
   }
@@ -318,10 +420,17 @@ async function boot() {
   }
 }
 
-window.addEventListener('hashchange', () => {
+async function handleNavigation() {
   const route = initialRoute();
-  if (route.bookId && (!state.book || state.book.id !== route.bookId || state.currentDocumentId !== route.documentId)) loadBook(route.bookId, route.documentId);
-});
+  if (route.bookId) {
+    if (!state.book || state.book.id !== route.bookId || state.currentDocumentId !== route.documentId) await loadBook(route.bookId, route.documentId);
+  } else if (state.book) {
+    await showLibrary();
+  }
+}
+
+window.addEventListener('hashchange', handleNavigation);
+window.addEventListener('popstate', handleNavigation);
 
 window.addEventListener('keydown', (event) => {
   if (!state.book || ['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement?.tagName)) return;
