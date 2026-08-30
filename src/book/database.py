@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shutil
@@ -34,6 +35,8 @@ CREATE TABLE IF NOT EXISTS documents (
     position INTEGER NOT NULL,
     source_mtime REAL,
     source_size INTEGER,
+    source_hash TEXT,
+    resource_root TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL,
     UNIQUE(book_id, source_path)
@@ -128,6 +131,10 @@ class Library:
             connection.execute("ALTER TABLE documents ADD COLUMN source_mtime REAL")
         if "source_size" not in columns:
             connection.execute("ALTER TABLE documents ADD COLUMN source_size INTEGER")
+        if "source_hash" not in columns:
+            connection.execute("ALTER TABLE documents ADD COLUMN source_hash TEXT")
+        if "resource_root" not in columns:
+            connection.execute("ALTER TABLE documents ADD COLUMN resource_root TEXT")
         try:
             fts_exists = connection.execute(
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'documents_fts'"
@@ -166,6 +173,17 @@ class Library:
         except OSError:
             return None, None
         return stat.st_mtime, stat.st_size
+
+    @staticmethod
+    def _source_hash(path: Path) -> str | None:
+        digest = hashlib.sha256()
+        try:
+            with path.open("rb") as source:
+                for chunk in iter(lambda: source.read(1024 * 1024), b""):
+                    digest.update(chunk)
+        except OSError:
+            return None
+        return digest.hexdigest()
 
     def add_book(self, title: str, description: str = "") -> sqlite3.Row:
         title = title.strip()
@@ -313,6 +331,7 @@ class Library:
         source_path: Path,
         document_type: str,
         content: str,
+        resource_root: Path | None = None,
     ) -> tuple[sqlite3.Row, Path]:
         with self.connection() as connection:
             book = self.get_book(connection, book_identifier)
@@ -330,16 +349,22 @@ class Library:
             ).fetchone()[0]
             now = utc_now()
             source_mtime, source_size = self._source_metadata(source_path)
+            source_hash = self._source_hash(source_path)
             cursor = connection.execute(
                 """
                 INSERT INTO documents(
                     book_id, title, source_path, entry_path, document_type, content, position,
-                    source_mtime, source_size, created_at, updated_at
-                ) VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?)
+                    source_mtime, source_size, source_hash, resource_root, created_at, updated_at
+                ) VALUES (?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     book["id"], title, str(source_path), document_type, content, position,
-                    source_mtime, source_size, now, now,
+                    source_mtime,
+                    source_size,
+                    source_hash,
+                    str(resource_root) if resource_root else None,
+                    now,
+                    now,
                 ),
             )
             document_id = int(cursor.lastrowid)
@@ -393,6 +418,7 @@ class Library:
         document_type: str,
         content: str,
         resources: list[tuple[str, str, str]],
+        resource_root: Path | None = None,
     ) -> sqlite3.Row:
         with self.connection() as connection:
             document = self.get_document(connection, document_id)
@@ -400,7 +426,8 @@ class Library:
             connection.execute(
                 """
                 UPDATE documents
-                SET entry_path = ?, document_type = ?, content = ?, source_mtime = ?, source_size = ?, updated_at = ?
+                SET entry_path = ?, document_type = ?, content = ?, source_mtime = ?, source_size = ?,
+                    source_hash = ?, resource_root = ?, updated_at = ?
                 WHERE id = ?
                 """,
                 (
@@ -408,6 +435,8 @@ class Library:
                     document_type,
                     content,
                     *self._source_metadata(Path(document["source_path"])),
+                    self._source_hash(Path(document["source_path"])),
+                    str(resource_root) if resource_root else None,
                     now,
                     document_id,
                 ),
@@ -481,7 +510,7 @@ class Library:
             documents = connection.execute(
                 """
                 SELECT documents.id, documents.title, documents.position, documents.document_type,
-                       documents.source_path, documents.source_mtime, documents.source_size,
+                       documents.source_path, documents.source_mtime, documents.source_size, documents.source_hash,
                        COALESCE(document_progress.scroll_ratio, 0) AS scroll_ratio
                 FROM documents
                 LEFT JOIN document_progress ON document_progress.document_id = documents.id
@@ -492,15 +521,19 @@ class Library:
             ).fetchall()
             document_values = [dict(row) for row in documents]
             for item in document_values:
-                current_mtime, current_size = self._source_metadata(Path(item["source_path"]))
-                item["source_stale"] = item["source_mtime"] is not None and (
-                    current_mtime is None
-                    or current_mtime != item["source_mtime"]
-                    or current_size != item["source_size"]
-                )
+                if item["source_hash"] is not None:
+                    item["source_stale"] = self._source_hash(Path(item["source_path"])) != item["source_hash"]
+                else:
+                    current_mtime, current_size = self._source_metadata(Path(item["source_path"]))
+                    item["source_stale"] = item["source_mtime"] is not None and (
+                        current_mtime is None
+                        or current_mtime != item["source_mtime"]
+                        or current_size != item["source_size"]
+                    )
                 item.pop("source_path", None)
                 item.pop("source_mtime", None)
                 item.pop("source_size", None)
+                item.pop("source_hash", None)
             progress = (
                 sum(float(item["scroll_ratio"] or 0) for item in document_values) / len(document_values)
                 if document_values
@@ -525,6 +558,8 @@ class Library:
 
     def is_document_stale(self, document_id: int | str) -> bool:
         document, _ = self.document_info(document_id)
+        if document["source_hash"] is not None:
+            return self._source_hash(Path(document["source_path"])) != document["source_hash"]
         current_mtime, current_size = self._source_metadata(Path(document["source_path"]))
         return document["source_mtime"] is not None and (
             current_mtime is None
@@ -631,19 +666,30 @@ class Library:
             except (sqlite3.OperationalError, sqlite3.DatabaseError):
                 fts_ids = None
             if fts_ids is not None:
-                title_like = f"%{needle}%"
-                title_ids = [
-                    int(row[0])
-                    for row in connection.execute(
-                        """
-                        SELECT documents.id
-                        FROM documents JOIN books ON books.id = documents.book_id
-                        WHERE documents.title LIKE ? COLLATE NOCASE OR books.title LIKE ? COLLATE NOCASE
-                        """,
-                        (title_like, title_like),
-                    ).fetchall()
-                ]
-                fts_ids = sorted(set(fts_ids).union(title_ids))
+                # FTS5 prefix matching is only a candidate accelerator. Search
+                # semantics are case-insensitive substring matching, so include
+                # rows whose title, book title, or content contains the complete
+                # query as well. SQLite NOCASE is reliable for ASCII; for other
+                # scripts, fall back to the Python casefold scan below rather
+                # than risk excluding a valid match here.
+                if needle.isascii():
+                    title_like = f"%{needle}%"
+                    substring_ids = [
+                        int(row[0])
+                        for row in connection.execute(
+                            """
+                            SELECT documents.id
+                            FROM documents JOIN books ON books.id = documents.book_id
+                            WHERE documents.title LIKE ? COLLATE NOCASE
+                               OR books.title LIKE ? COLLATE NOCASE
+                               OR documents.content LIKE ? COLLATE NOCASE
+                            """,
+                            (title_like, title_like, title_like),
+                        ).fetchall()
+                    ]
+                    fts_ids = sorted(set(fts_ids).union(substring_ids))
+                else:
+                    fts_ids = None
                 if not fts_ids:
                     # Prefix matching cannot represent arbitrary substring searches; retain the old behavior.
                     fts_ids = None

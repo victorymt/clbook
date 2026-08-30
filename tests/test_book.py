@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import threading
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -96,6 +97,52 @@ class BookCliTestCase(unittest.TestCase):
         self.assertTrue(source.is_file())
         self.assertFalse(archive_dir.exists())
 
+    def test_search_finds_substrings_not_matched_by_fts_prefixes(self) -> None:
+        prefix_match = self.sources / "prefix.txt"
+        substring_match = self.sources / "substring.txt"
+        prefix_match.write_text("foobar", encoding="utf-8")
+        substring_match.write_text("xxfooxx", encoding="utf-8")
+        self.add_book()
+        self.add_document("Study", prefix_match)
+        self.add_document("Study", substring_match)
+
+        results = Library(self.data_dir).search("foo")
+
+        self.assertEqual({result["title"] for result in results}, {"prefix", "substring"})
+
+    def test_bulk_import_rolls_back_unless_continue_is_requested(self) -> None:
+        first = self.sources / "first.txt"
+        missing = self.sources / "missing.txt"
+        first.write_text("first", encoding="utf-8")
+        self.add_book()
+
+        status, _, error = self.invoke("doc", "add", "Study", str(first), str(missing))
+        self.assertEqual(status, 1)
+        self.assertIn("missing.txt", error)
+        self.assertEqual(Library(self.data_dir).list_documents("Study")[1], [])
+
+        status, _, error = self.invoke(
+            "doc", "add", "Study", str(first), str(missing), "--continue-on-error"
+        )
+        self.assertEqual(status, 1)
+        self.assertIn("missing.txt", error)
+        _, documents = Library(self.data_dir).list_documents("Study")
+        self.assertEqual([document["title"] for document in documents], ["first"])
+
+    def test_stale_detection_catches_same_size_content_changes(self) -> None:
+        source = self.sources / "stable.txt"
+        source.write_text("abc", encoding="utf-8")
+        self.add_book()
+        document_id = self.add_document("Study", source)
+        original_mtime = source.stat().st_mtime
+
+        source.write_text("xyz", encoding="utf-8")
+        os.utime(source, (original_mtime, original_mtime))
+
+        library = Library(self.data_dir)
+        self.assertTrue(library.is_document_stale(document_id))
+        self.assertTrue(library.get_book_for_web(1)["documents"][0]["source_stale"])
+
     def test_html_is_sanitized_and_local_assets_are_available(self) -> None:
         styles = self.sources / "page.css"
         styles.write_text("body { background: url(texture.png); }", encoding="utf-8")
@@ -136,6 +183,47 @@ class BookCliTestCase(unittest.TestCase):
             server.shutdown()
             thread.join(timeout=2)
             server.server_close()
+
+    def test_web_refresh_reuses_persisted_resource_root(self) -> None:
+        shared_root = self.root / "course"
+        chapters = shared_root / "chapters"
+        chapters.mkdir(parents=True)
+        image = shared_root / "images" / "figure.png"
+        image.parent.mkdir()
+        image.write_bytes(b"figure")
+        source = chapters / "lesson.html"
+        source.write_text("<html><body><img src='../images/figure.png'></body></html>", encoding="utf-8")
+
+        self.add_book()
+        status, output, error = self.invoke(
+            "doc", "add", "Study", str(source), "--resource-root", str(shared_root)
+        )
+        self.assertEqual(status, 0, error)
+        document_id = int(output.split("Added document ", 1)[1].split(" ", 1)[0])
+        library = Library(self.data_dir)
+        document, resources = library.document_info(document_id)
+        self.assertEqual(document["resource_root"], str(shared_root.resolve()))
+        self.assertEqual(len(resources), 1)
+
+        server = create_server(library, 0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        try:
+            request = Request(f"{base}/api/documents/{document_id}/refresh", method="POST")
+            with urlopen(request) as response:
+                refreshed = json.load(response)
+            self.assertEqual(refreshed["id"], document_id)
+            self.assertNotIn("resource_root", refreshed)
+        finally:
+            server.shutdown()
+            thread.join(timeout=2)
+            server.server_close()
+
+        document, resources = library.document_info(document_id)
+        self.assertEqual(document["resource_root"], str(shared_root.resolve()))
+        self.assertEqual(len(resources), 1)
+        self.assertTrue((library.document_dir(document_id) / resources[0]["relative_path"]).is_file())
 
     def test_html_void_tags_do_not_remove_following_content(self) -> None:
         source = self.sources / "void.html"
@@ -292,6 +380,7 @@ class BookCliTestCase(unittest.TestCase):
             with urlopen(f"{base}/documents/{first_id}/content") as response:
                 body = response.read().decode("utf-8")
             self.assertIn(f"/documents/{second_id}/content", body)
+            self.assertNotIn(f'/documents/{second_id}/content" target="_blank"', body)
         finally:
             server.shutdown()
             thread.join(timeout=2)

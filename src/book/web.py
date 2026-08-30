@@ -48,6 +48,7 @@ def document_payload(library: Library, document: object, *, stale: bool | None =
     """Return document metadata safe to expose through the JSON API."""
     payload = dict(document)  # type: ignore[arg-type]
     source_path = payload.pop("source_path", None)
+    payload.pop("resource_root", None)
     payload.pop("source_mtime", None)
     payload.pop("source_size", None)
     payload.pop("content", None)
@@ -311,9 +312,15 @@ def make_handler(library: Library) -> type[BaseHTTPRequestHandler]:
                 source = Path(document["source_path"])
                 if not source.is_file():
                     raise BookError("Original source is unavailable; the archived copy was not changed.")
-                result = replace_archive(source, library.document_dir(document["id"]))
+                resource_root = Path(document["resource_root"]) if document["resource_root"] else None
+                result = replace_archive(source, library.document_dir(document["id"]), resource_root)
                 updated = library.update_document_import(
-                    document["id"], result.entry_path, result.document_type, result.content, result.resources
+                    document["id"],
+                    result.entry_path,
+                    result.document_type,
+                    result.content,
+                    result.resources,
+                    resource_root,
                 )
                 self.send_json(document_payload(library, updated))
                 return
@@ -337,6 +344,7 @@ def make_handler(library: Library) -> type[BaseHTTPRequestHandler]:
                 if resource_root_value is not None and not isinstance(resource_root_value, str):
                     raise BookError("resource_root must be a string.")
                 source = Path(source_value).expanduser().resolve()
+                resource_root = Path(resource_root_value).expanduser().resolve() if resource_root_value else None
                 if not source.is_file():
                     raise BookError(f"'{source}' is not a readable file.")
                 kind = document_type_for(source)
@@ -348,13 +356,13 @@ def make_handler(library: Library) -> type[BaseHTTPRequestHandler]:
                 else:
                     title = suggested_title(source, kind, source_content)
                 document, archive_dir = library.insert_document(
-                    str(int(match.group(1))), title, source, kind, ""
+                    str(int(match.group(1))), title, source, kind, "", resource_root=resource_root
                 )
                 try:
                     result = archive_document(
                         source,
                         archive_dir,
-                        Path(resource_root_value).expanduser().resolve() if resource_root_value else None,
+                        resource_root,
                     )
                     document = library.finish_document_import(
                         document["id"], result.entry_path, result.resources, result.content

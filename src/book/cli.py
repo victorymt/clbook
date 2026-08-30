@@ -95,7 +95,9 @@ def _add_document(
     title = title_override.strip() if title_override else suggested_title(source, document_type, source_content)
     if not title:
         raise BookError("Document title cannot be empty.")
-    document, archive_dir = library.insert_document(book, title, source, document_type, "")
+    document, archive_dir = library.insert_document(
+        book, title, source, document_type, "", resource_root=allowed_root
+    )
     try:
         result = archive_document(source, archive_dir, allowed_root)
         return library.finish_document_import(document["id"], result.entry_path, result.resources, result.content)
@@ -115,16 +117,31 @@ def command_doc_add(args: argparse.Namespace) -> int:
         raise BookError("No files found to import.")
     if args.title and len(sources) != 1:
         raise BookError("--title can only be used when importing one file.")
+    imported_ids: list[int] = []
+    failures: list[tuple[Path, Exception]] = []
     for source in sources:
-        document = _add_document(
-            library,
-            args.book,
-            source,
-            args.title if len(sources) == 1 else None,
-            Path(args.resource_root).expanduser().resolve() if args.resource_root else None,
-        )
+        try:
+            document = _add_document(
+                library,
+                args.book,
+                source,
+                args.title if len(sources) == 1 else None,
+                Path(args.resource_root).expanduser().resolve() if args.resource_root else None,
+            )
+        except Exception as error:
+            if args.continue_on_error:
+                failures.append((source, error))
+                print(f"error: {source}: {error}", file=sys.stderr)
+                continue
+            for document_id in reversed(imported_ids):
+                try:
+                    library.remove_document(document_id)
+                except Exception:
+                    pass
+            raise
+        imported_ids.append(int(document["id"]))
         print(f"Added document {document['id']} to {document['book_title']}: {document['title']}")
-    return 0
+    return 1 if failures else 0
 
 
 def command_doc_list(args: argparse.Namespace) -> int:
@@ -157,6 +174,8 @@ def command_doc_info(args: argparse.Namespace) -> int:
     print(f"Position: {document['position']}")
     print(f"Type: {document['document_type']}")
     print(f"Source: {document['source_path']}")
+    if document["resource_root"]:
+        print(f"Resource root: {document['resource_root']}")
     stale = library.is_document_stale(document["id"])
     print(f"Source status: {'stale' if stale else 'current'}")
     print(f"Archive: {library.document_dir(document['id']) / document['entry_path']}")
@@ -170,13 +189,18 @@ def command_doc_refresh(args: argparse.Namespace) -> int:
     source = Path(document["source_path"])
     if not source.is_file():
         raise BookError(f"Original source '{source}' is unavailable; the archived copy was not changed.")
+    resource_root = (
+        Path(args.resource_root).expanduser().resolve()
+        if args.resource_root
+        else Path(document["resource_root"]) if document["resource_root"] else None
+    )
     result = replace_archive(
         source,
         library.document_dir(document["id"]),
-        Path(args.resource_root).expanduser().resolve() if args.resource_root else None,
+        resource_root,
     )
     document = library.update_document_import(
-        document["id"], result.entry_path, result.document_type, result.content, result.resources
+        document["id"], result.entry_path, result.document_type, result.content, result.resources, resource_root
     )
     print(f"Refreshed document {document['id']}: {document['title']}")
     return 0
@@ -251,6 +275,11 @@ def add_document_commands(subparsers: argparse._SubParsersAction[argparse.Argume
     add.add_argument("book", help="Book ID or exact title")
     add.add_argument("path", nargs="+", help="File(s) or directory to import")
     add.add_argument("--recursive", action="store_true", help="Recursively import files from directories")
+    add.add_argument(
+        "--continue-on-error",
+        action="store_true",
+        help="Keep successful imports when another source fails",
+    )
     add.add_argument("--resource-root", help="Allow local assets under this directory")
     add.add_argument("--title", help="Override the title inferred from the document")
     add.set_defaults(handler=command_doc_add)

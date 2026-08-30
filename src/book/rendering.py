@@ -114,6 +114,13 @@ def _safe_url(value: str) -> str:
     return value
 
 
+def _link_attributes(destination: str) -> str:
+    """Keep links to chapters inside the reader; isolate external links."""
+    if destination.startswith("/documents/"):
+        return ""
+    return ' target="_blank" rel="noopener noreferrer"'
+
+
 def render_inline(value: str, references: dict[str, str] | None = None) -> str:
     tokens: list[str] = []
 
@@ -140,7 +147,7 @@ def render_inline(value: str, references: dict[str, str] | None = None) -> str:
         label = html.unescape(match.group(1))
         destination = _safe_url(html.unescape(match.group(2).strip()))
         return stash(
-            f'<a href="{html.escape(destination, quote=True)}" target="_blank" rel="noopener noreferrer">{html.escape(label)}</a>'
+            f'<a href="{html.escape(destination, quote=True)}"{_link_attributes(destination)}>{html.escape(label)}</a>'
         )
 
     escaped = re.sub(r"(?<!!)\[([^\]]+)\]\(([^)\s]+)(?:\s+[^)]*)?\)", link, escaped)
@@ -161,8 +168,9 @@ def render_inline(value: str, references: dict[str, str] | None = None) -> str:
             if destination is None:
                 return match.group(0)
             label = html.escape(html.unescape(match.group(1)))
+            destination = _safe_url(destination)
             return stash(
-                f'<a href="{html.escape(_safe_url(destination), quote=True)}" target="_blank" rel="noopener noreferrer">{label}</a>'
+                f'<a href="{html.escape(destination, quote=True)}"{_link_attributes(destination)}>{label}</a>'
             )
 
         escaped = re.sub(r"(?<!!)\[([^\]]+)\]\[([^\]]+)\]", reference_link, escaped)

@@ -62,6 +62,23 @@ function renderStatus(title, detail = '') {
   app.innerHTML = `<main class="library"><section class="empty status-view${statusClass}" role="status"><span class="status-dot" aria-hidden="true"></span><strong>${escapeHtml(title)}</strong>${detail ? `<span>${escapeHtml(detail)}</span>` : ''}</section></main>`;
 }
 
+function showReaderError(message) {
+  const titleGroup = app.querySelector('.reader-title-group');
+  if (!titleGroup) return;
+  let error = titleGroup.querySelector('.reader-error');
+  if (!error) {
+    error = document.createElement('span');
+    error.className = 'reader-error';
+    error.setAttribute('role', 'alert');
+    titleGroup.append(error);
+  }
+  error.textContent = message;
+}
+
+function clearReaderError() {
+  app.querySelector('.reader-error')?.remove();
+}
+
 function renderLibrary(books) {
   cancelProgressSave();
   state.book = null;
@@ -124,10 +141,19 @@ function renderReader() {
   const theme = app.querySelector('#theme');
   theme.value = book.theme;
   theme.addEventListener('change', async () => {
+    const previousTheme = book.theme;
     book.theme = theme.value;
     app.querySelector('.reader').dataset.theme = book.theme;
-    await persistReaderState(book.id, state.currentDocumentId, book.theme);
-    if (state.currentDocumentId) selectDocument(state.currentDocumentId, false);
+    try {
+      await persistReaderState(book.id, state.currentDocumentId, book.theme);
+      clearReaderError();
+      if (state.currentDocumentId) selectDocument(state.currentDocumentId, false);
+    } catch (error) {
+      book.theme = previousTheme;
+      theme.value = previousTheme;
+      app.querySelector('.reader').dataset.theme = previousTheme;
+      showReaderError(`Unable to save theme: ${error.message}`);
+    }
   });
   app.querySelector('#back').addEventListener('click', showLibrary);
   app.querySelector('#edit-book').addEventListener('click', editBook);
@@ -281,6 +307,19 @@ async function selectDocument(documentId, saveState = true) {
   if (!document) return;
   cancelProgressSave();
   const selectionGeneration = state.progressGeneration;
+  const frame = app.querySelector('#reader-frame');
+  if (!frame) return;
+  if (saveState) {
+    try {
+      await persistReaderState(state.book.id, documentId, state.book.theme);
+    } catch (error) {
+      if (selectionGeneration === state.progressGeneration) {
+        showReaderError(`Unable to select this chapter: ${error.message}`);
+      }
+      return;
+    }
+  }
+  if (selectionGeneration !== state.progressGeneration) return;
   state.currentDocumentId = documentId;
   app.querySelectorAll('.toc-item').forEach((item) => {
     const isSelected = Number(item.dataset.documentId) === documentId;
@@ -289,10 +328,7 @@ async function selectDocument(documentId, saveState = true) {
     if (isSelected) button.setAttribute('aria-current', 'page');
     else button.removeAttribute('aria-current');
   });
-  const frame = app.querySelector('#reader-frame');
-  if (!frame) return;
-  if (saveState) await persistReaderState(state.book.id, documentId, state.book.theme);
-  if (selectionGeneration !== state.progressGeneration || state.currentDocumentId !== documentId) return;
+  clearReaderError();
   setLocation(state.book.id, documentId, !saveState);
   const progressGeneration = state.progressGeneration;
   frame.onload = () => restoreProgress(document, frame, progressGeneration);

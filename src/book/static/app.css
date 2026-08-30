@@ -41,6 +41,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .reader-header h1 { overflow: hidden; margin: 0; font-size: 16px; font-weight: 700; text-overflow: ellipsis; white-space: nowrap; }
 .reader-actions { display: inline-flex; gap: 5px; }
 .reader-header .subtitle { overflow: hidden; margin: 3px 0 0; color: var(--muted); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.reader-error { display: block; margin-top: 4px; color: var(--focus); font-size: 12px; line-height: 1.2; }
 .icon-button, .chapter-nav button, .move-button { display: inline-grid; place-items: center; border: 1px solid var(--line); background: var(--surface); cursor: pointer; }
 .icon-button { width: 34px; height: 34px; font-size: 20px; }
 .icon-button:hover, .chapter-nav button:hover, .move-button:hover { border-color: var(--accent); color: var(--accent); }

@@ -46,14 +46,26 @@ book doc add "Linear Algebra" ~/notes --recursive
 book edit "Linear Algebra" --description "Updated references"
 ```
 
-The importer recognizes HTML (`.html`/`.htm`), Markdown (`.md`/`.markdown`), and plain text (`.txt`). Other extensions are imported as text.
+`book doc add` accepts several files and directories in one command. Directories are scanned one level deep by default; add `--recursive` to include nested files. `--title` is available when importing one file. Use `--resource-root` when a document intentionally references assets in a shared parent directory:
+
+```bash
+book doc add "Linear Algebra" ~/course/chapters/intro.html \
+  --resource-root ~/course
+```
+
+Multi-file imports are atomic by default: if one source fails, earlier imports from the same command are rolled back. Add `--continue-on-error` when partial success is desired; the command returns a failure status and prints the sources that could not be imported.
+
+The importer recognizes HTML (`.html`/`.htm`), Markdown (`.md`/`.markdown`), and plain text (`.txt`). When referenced by a document, CSS, Web App Manifests, images, fonts, and media are copied and rewritten as local assets. Other document extensions are imported as text.
 
 Adding a document copies the source file and locally referenced images, stylesheets, fonts, and media into the library. The original file is never changed or deleted. Re-import later changes with:
 
 ```bash
 book doc refresh 1
 book doc rename 1 "Vectors and matrices"
+book doc info 1
 ```
+
+`book doc info` shows the source path, archive location, and whether the source file has changed since the last import. Refreshing re-archives the source and its local resources without deleting the original file; a previously configured `--resource-root` is reused automatically.
 
 ## Read And Search
 
@@ -63,23 +75,26 @@ book serve --open
 book search determinant --book "Linear Algebra"
 ```
 
-`book open` starts a local server at `127.0.0.1:8765`, opens the selected book, and keeps running until `Ctrl-C`. The reader has a chapter list, drag-and-drop ordering, previous/next navigation, local full-text search, theme selection, and saved reading positions.
+`book open` starts a local server at `127.0.0.1:8765`, opens the selected book, and keeps running until `Ctrl-C`. The reader has a chapter list, drag-and-drop ordering, previous/next navigation, local full-text search, theme selection, saved reading positions, and average book progress. From the reader you can also create, edit, or delete books, rename chapters, refresh stale chapters, and return to the shelf with browser history.
 
 Theme selection applies to generated Markdown/text pages and is injected into archived HTML pages as well.
 
-Common Markdown tables, nested lists, task lists, strikethrough, and reference links are rendered locally. Links between documents in the same book are routed through the reader.
+Common Markdown tables, nested lists, task lists, strikethrough, and reference links are rendered locally. Search uses case-insensitive substring matching across book titles, chapter titles, and extracted content. Links between documents in the same book are routed to the corresponding chapter content.
 
-`book serve` opens the bookshelf; add `--open` to launch it in the default browser. `book open BOOK` opens one book directly.
+The local server exposes JSON endpoints under `/api` for bookshelf integrations. The API supports listing and searching books, creating/updating/deleting books, importing or removing documents, refreshing a document, reordering chapters, and saving reader state and progress. It accepts local file paths for document imports and should only be exposed on a trusted machine.
+
+`book serve` starts the bookshelf; add `--open` to launch it in the default browser. `book open BOOK` opens one book directly. Both commands bind to loopback only.
 
 Use another port when needed:
 
 ```bash
 book open "Linear Algebra" --port 8989
+book serve --port 8989
 ```
 
 HTML documents render with their archived styles in an isolated frame. Script execution, forms, plugins, and automatic remote resource loading are blocked; local archived assets remain available.
 
-Create a portable ZIP backup with `book export PATH` and restore it with `book restore PATH`. Use `--replace` only when intentionally replacing an existing data directory.
+Create a portable ZIP backup with `book export PATH` and restore it with `book restore PATH`. Export refuses to overwrite an existing destination. Restore refuses to use a non-empty data directory unless `--replace` is supplied; replacement is staged and committed atomically, and the archive is validated for unsafe paths before extraction.
 
 ## Security And Archiving
 
@@ -94,3 +109,5 @@ uv sync
 uv run pytest -q
 uv build
 ```
+
+The test suite covers importing and refreshing documents, resource sanitization, Markdown rendering, search, reader state, the management API, and backup/restore behavior.
