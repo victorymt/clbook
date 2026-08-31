@@ -456,6 +456,28 @@ class BookCliTestCase(unittest.TestCase):
                     "POST",
                 )
             self.assertEqual(error.exception.code, 400)
+
+            second_document = request_json(
+                f"{base}/api/books/{book['id']}/documents", {"path": str(second)}, "POST"
+            )
+            archive_dir = library.document_dir(document_id)
+            self.assertTrue(archive_dir.is_dir())
+            removed = request_json(f"{base}/api/documents/{document_id}", method="DELETE")
+            self.assertEqual(removed["id"], document_id)
+            self.assertTrue(source.is_file())
+            self.assertFalse(archive_dir.exists())
+            updated_book = request_json(f"{base}/api/books/{book['id']}")
+            self.assertEqual(
+                [(item["id"], item["position"]) for item in updated_book["documents"]],
+                [(second_document["id"], 1)],
+            )
+            state = request_json(f"{base}/api/books/{book['id']}/state", {"theme": "dark"}, "PUT")
+            self.assertIsNone(state["last_document_id"])
+
+            with urlopen(f"{base}/static/app.js") as response:
+                app_script = response.read().decode("utf-8")
+            self.assertIn('aria-label="Delete chapter"', app_script)
+            self.assertIn("async function deleteChapter", app_script)
         finally:
             server.shutdown()
             thread.join(timeout=2)

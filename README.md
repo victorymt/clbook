@@ -75,7 +75,7 @@ book serve --open
 book search determinant --book "Linear Algebra"
 ```
 
-`book open` starts a local server at `127.0.0.1:8765`, opens the selected book, and keeps running until `Ctrl-C`. The reader has a chapter list, drag-and-drop ordering, previous/next navigation, local full-text search, theme selection, saved reading positions, and average book progress. From the reader you can also create, edit, or delete books, rename chapters, refresh stale chapters, and return to the shelf with browser history.
+`book open` starts a local server at `127.0.0.1:8765`, opens the selected book, and keeps running until `Ctrl-C`. The reader has a chapter list, drag-and-drop ordering, previous/next navigation, local full-text search, theme selection, saved reading positions, and average book progress. From the reader you can also create, edit, or delete books; rename, refresh, or delete chapters; and return to the shelf with browser history.
 
 Theme selection applies to generated Markdown/text pages and is injected into archived HTML pages as well.
 

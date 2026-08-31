@@ -4,15 +4,26 @@ const state = {
   book: null,
   currentDocumentId: null,
   progressTimer: null,
+  pendingProgress: null,
   progressGeneration: 0,
   readerStateWrite: Promise.resolve(),
   dragDocumentId: null,
+  deletingDocumentIds: new Set(),
 };
 
 function cancelProgressSave() {
   window.clearTimeout(state.progressTimer);
   state.progressTimer = null;
+  state.pendingProgress = null;
   state.progressGeneration += 1;
+}
+
+function flushProgressSave() {
+  window.clearTimeout(state.progressTimer);
+  state.progressTimer = null;
+  const pending = state.pendingProgress;
+  state.pendingProgress = null;
+  return pending ? saveProgress(pending.bookId, pending.documentId, pending.ratio) : Promise.resolve();
 }
 
 function persistReaderState(bookId, documentId, theme) {
@@ -181,6 +192,7 @@ async function editBook() {
 async function deleteBook() {
   if (!state.book || !window.confirm(`Delete “${state.book.title}” and its archived chapters?`)) return;
   try {
+    await flushProgressSave();
     await request(`/api/books/${state.book.id}?with_documents=true`, { method: 'DELETE' });
     await showLibrary();
   } catch (error) {
@@ -196,7 +208,7 @@ function chapterItem(document) {
   const stale = document.source_stale ? ' <span class="toc-stale" title="Source file changed">●</span>' : '';
   return `<li class="toc-item${selected}" draggable="true" data-document-id="${document.id}">
     <button class="toc-open" type="button"${document.id === state.currentDocumentId ? ' aria-current="page"' : ''}><span class="toc-position">${String(document.position).padStart(2, '0')}</span><span class="toc-title">${escapeHtml(document.title)}${stale}</span><span class="toc-progress" aria-label="${progress}% complete"><span style="width: ${progress}%"></span></span></button>
-    <span class="move-controls"><button class="move-button" type="button" data-move="-1" title="Move chapter up" aria-label="Move chapter up"${first}>&#8593;</button><button class="move-button" type="button" data-move="1" title="Move chapter down" aria-label="Move chapter down"${last}>&#8595;</button><button class="move-button" type="button" data-rename title="Rename chapter" aria-label="Rename chapter">✎</button><button class="move-button" type="button" data-refresh title="Refresh chapter" aria-label="Refresh chapter">↻</button></span>
+    <span class="move-controls"><button class="move-button" type="button" data-move="-1" title="Move chapter up" aria-label="Move chapter up"${first}>&#8593;</button><button class="move-button" type="button" data-move="1" title="Move chapter down" aria-label="Move chapter down"${last}>&#8595;</button><button class="move-button" type="button" data-rename title="Rename chapter" aria-label="Rename chapter">✎</button><button class="move-button" type="button" data-refresh title="Refresh chapter" aria-label="Refresh chapter">↻</button><button class="move-button danger-button" type="button" data-delete title="Delete chapter" aria-label="Delete chapter">&times;</button></span>
   </li>`;
 }
 
@@ -209,6 +221,7 @@ function bindChapters() {
     item.querySelectorAll('[data-move]').forEach((button) => button.addEventListener('click', () => moveChapter(documentId, Number(button.dataset.move))));
     item.querySelector('[data-rename]')?.addEventListener('click', () => renameChapter(documentId));
     item.querySelector('[data-refresh]')?.addEventListener('click', () => refreshChapter(documentId));
+    item.querySelector('[data-delete]')?.addEventListener('click', () => deleteChapter(documentId));
     item.addEventListener('dragstart', () => { state.dragDocumentId = documentId; item.classList.add('dragging'); });
     item.addEventListener('dragend', () => { state.dragDocumentId = null; item.classList.remove('dragging'); });
     item.addEventListener('dragover', (event) => event.preventDefault());
@@ -216,7 +229,10 @@ function bindChapters() {
       event.preventDefault();
       if (!state.dragDocumentId || state.dragDocumentId === documentId) return;
       const dragged = list.querySelector(`[data-document-id="${state.dragDocumentId}"]`);
-      if (dragged) list.insertBefore(dragged, item);
+      if (!dragged) return;
+      const items = [...list.children];
+      if (items.indexOf(dragged) < items.indexOf(item)) item.after(dragged);
+      else item.before(dragged);
       await persistOrder();
     });
   });
@@ -246,6 +262,43 @@ async function refreshChapter(documentId) {
     await loadBook(state.book.id, documentId);
   } catch (error) {
     renderStatus('Unable to refresh this chapter', error.message);
+  }
+}
+
+async function deleteChapter(documentId) {
+  const book = state.book;
+  const index = book?.documents.findIndex((item) => item.id === documentId) ?? -1;
+  const document = index >= 0 ? book.documents[index] : null;
+  if (!book || !document || state.deletingDocumentIds.has(documentId) || !window.confirm(
+    `Delete chapter “${document.title}”?\n\nOnly the archived copy will be removed. The original source file will stay on disk.`,
+  )) return;
+
+  const deletingCurrent = documentId === state.currentDocumentId;
+  const replacementId = deletingCurrent
+    ? (book.documents[index + 1] || book.documents[index - 1])?.id || null
+    : state.currentDocumentId;
+  const deleteButton = app.querySelector(`.toc-item[data-document-id="${documentId}"] [data-delete]`);
+  state.deletingDocumentIds.add(documentId);
+  if (deleteButton) deleteButton.disabled = true;
+
+  try {
+    await flushProgressSave();
+    if (deletingCurrent) cancelProgressSave();
+    await request(`/api/documents/${documentId}`, { method: 'DELETE' });
+    await loadBook(book.id, replacementId);
+    if (deletingCurrent && replacementId && state.book?.id === book.id && state.currentDocumentId === replacementId) {
+      try {
+        await persistReaderState(book.id, replacementId, state.book.theme);
+      } catch (error) {
+        showReaderError(`Chapter deleted, but the new reading position could not be saved: ${error.message}`);
+      }
+    }
+  } catch (error) {
+    showReaderError(`Unable to delete this chapter: ${error.message}`);
+  } finally {
+    state.deletingDocumentIds.delete(documentId);
+    const currentButton = app.querySelector(`.toc-item[data-document-id="${documentId}"] [data-delete]`);
+    if (currentButton) currentButton.disabled = false;
   }
 }
 
@@ -305,6 +358,7 @@ function bindSearch() {
 async function selectDocument(documentId, saveState = true) {
   const document = state.book.documents.find((item) => item.id === documentId);
   if (!document) return;
+  await flushProgressSave();
   cancelProgressSave();
   const selectionGeneration = state.progressGeneration;
   const frame = app.querySelector('#reader-frame');
@@ -354,10 +408,14 @@ function restoreProgress(document, frame, progressGeneration) {
       document.scroll_ratio = ratio;
       updateBookProgress();
       window.clearTimeout(state.progressTimer);
+      state.pendingProgress = { bookId, documentId: document.id, ratio };
       const generation = state.progressGeneration;
       state.progressTimer = window.setTimeout(() => {
         if (generation === state.progressGeneration && state.currentDocumentId === document.id) {
-          saveProgress(bookId, document.id, ratio);
+          const pending = state.pendingProgress;
+          state.progressTimer = null;
+          state.pendingProgress = null;
+          if (pending) saveProgress(pending.bookId, pending.documentId, pending.ratio);
         }
       }, 450);
     }, { passive: true });
@@ -391,7 +449,7 @@ function updateBookProgress() {
 }
 
 function saveProgress(bookId, documentId, ratio) {
-  request(`/api/documents/${documentId}/progress`, { method: 'PUT', body: JSON.stringify({ scroll_ratio: ratio }) }).catch(() => {});
+  const write = request(`/api/documents/${documentId}/progress`, { method: 'PUT', body: JSON.stringify({ scroll_ratio: ratio }) }).catch(() => {});
   const document = state.book?.id === bookId
     ? state.book.documents.find((item) => item.id === documentId)
     : null;
@@ -400,6 +458,7 @@ function saveProgress(bookId, documentId, ratio) {
     state.book.progress = state.book.documents.reduce((sum, item) => sum + Number(item.scroll_ratio || 0), 0) / state.book.documents.length;
     updateBookProgress();
   }
+  return write;
 }
 
 function updateNavigation() {
@@ -420,6 +479,7 @@ function adjacentDocument(direction) {
 }
 
 async function loadBook(bookId, requestedDocumentId = null) {
+  await flushProgressSave();
   cancelProgressSave();
   renderStatus('Opening book');
   try {
@@ -436,6 +496,7 @@ async function loadBook(bookId, requestedDocumentId = null) {
 }
 
 async function showLibrary() {
+  await flushProgressSave();
   cancelProgressSave();
   renderStatus('Loading library');
   try {
