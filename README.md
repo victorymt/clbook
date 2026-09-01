@@ -75,13 +75,15 @@ book serve --open
 book search determinant --book "Linear Algebra"
 ```
 
-`book open` starts a local server at `127.0.0.1:8765`, opens the selected book, and keeps running until `Ctrl-C`. The reader has a chapter list, drag-and-drop ordering, previous/next navigation, local full-text search, theme selection, saved reading positions, and average book progress. From the reader you can also create, edit, or delete books; rename, refresh, or delete chapters; and return to the shelf with browser history.
+`book open` starts a local server at `127.0.0.1:8765`, opens the selected book, and keeps running until `Ctrl-C`. The reader has a chapter list, drag-and-drop ordering, previous/next navigation, local full-text search, theme selection, saved reading positions, and average book progress. From the reader you can also create, edit, or delete books; rename, refresh, or delete chapters; select several chapters and run refresh or delete from the batch-action menu; and return to the shelf with browser history. Batch results report the requested count, successful document metadata, and failed IDs with error details, and deleting a chapter only removes its archived copy.
 
 Theme selection applies to generated Markdown/text pages and is injected into archived HTML pages as well.
 
-Common Markdown tables, nested lists, task lists, strikethrough, and reference links are rendered locally. Search uses case-insensitive substring matching across book titles, chapter titles, and extracted content. Links between documents in the same book are routed to the corresponding chapter content.
+The language menu switches the interface between English (`en`) and Chinese (`zh-CN`). English is the default. The selected locale is stored in the browser under `localStorage` key `book.locale` and is restored when the reader is reloaded; theme options and other interface labels follow the selected locale.
 
-The local server exposes JSON endpoints under `/api` for bookshelf integrations. The API supports listing and searching books, creating/updating/deleting books, importing or removing documents, refreshing a document, reordering chapters, and saving reader state and progress. It accepts local file paths for document imports and should only be exposed on a trusted machine.
+Common Markdown tables, nested lists, task lists, strikethrough, and reference links are rendered locally. Search uses case-insensitive substring matching across book titles, chapter titles, and extracted content. Reader search results load in batches and clearly indicate when more matches are available. Links between documents in the same book are routed to the corresponding chapter content.
+
+The local server exposes JSON endpoints under `/api` for bookshelf integrations. The API supports listing and searching books, creating/updating/deleting books, importing or removing documents, refreshing a document, reordering chapters, and saving reader state and progress. Batch chapter management is available at `POST /api/books/{book_id}/documents/batch` with a JSON body such as `{"action":"refresh","document_ids":[1,2]}`; set `action` to `delete` to remove the selected archived copies. The response contains `action`, `requested`, `succeeded`, and `failed` so clients can inspect partial results. It accepts local file paths for document imports and should only be exposed on a trusted machine.
 
 `book serve` starts the bookshelf; add `--open` to launch it in the default browser. `book open BOOK` opens one book directly. Both commands bind to loopback only.
 

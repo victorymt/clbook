@@ -243,6 +243,24 @@ def make_handler(library: Library) -> type[BaseHTTPRequestHandler]:
             except Exception:
                 self.fail(HTTPStatus.INTERNAL_SERVER_ERROR, "Unable to update the library.")
 
+        def refresh_document(self, document_id: int) -> dict[str, object]:
+            """Refresh one archived document from its original source."""
+            document, _ = library.document_info(document_id)
+            source = Path(document["source_path"])
+            if not source.is_file():
+                raise BookError("Original source is unavailable; the archived copy was not changed.")
+            resource_root = Path(document["resource_root"]) if document["resource_root"] else None
+            result = replace_archive(source, library.document_dir(document["id"]), resource_root)
+            updated = library.update_document_import(
+                document["id"],
+                result.entry_path,
+                result.document_type,
+                result.content,
+                result.resources,
+                resource_root,
+            )
+            return document_payload(library, updated)
+
         def handle_put(self) -> None:
             path = urlparse(self.path).path
             body = self.parse_body()
@@ -308,21 +326,51 @@ def make_handler(library: Library) -> type[BaseHTTPRequestHandler]:
             path = urlparse(self.path).path
             refresh_match = re.fullmatch(r"/api/documents/(\d+)/refresh", path)
             if refresh_match:
-                document, _ = library.document_info(int(refresh_match.group(1)))
-                source = Path(document["source_path"])
-                if not source.is_file():
-                    raise BookError("Original source is unavailable; the archived copy was not changed.")
-                resource_root = Path(document["resource_root"]) if document["resource_root"] else None
-                result = replace_archive(source, library.document_dir(document["id"]), resource_root)
-                updated = library.update_document_import(
-                    document["id"],
-                    result.entry_path,
-                    result.document_type,
-                    result.content,
-                    result.resources,
-                    resource_root,
+                self.send_json(self.refresh_document(int(refresh_match.group(1))))
+                return
+            batch_match = re.fullmatch(r"/api/books/(\d+)/documents/batch", path)
+            if batch_match:
+                book_id = int(batch_match.group(1))
+                # Validate the parent book before processing individual items.
+                library.get_book_for_web(book_id)
+                body = self.parse_body()
+                action = body.get("action")
+                if not isinstance(action, str) or action not in {"refresh", "delete"}:
+                    raise BookError("action must be 'refresh' or 'delete'.")
+                document_ids = body.get("document_ids")
+                if not isinstance(document_ids, list) or any(
+                    isinstance(item, bool) or not isinstance(item, int) for item in document_ids
+                ):
+                    raise BookError("document_ids must be an array of integers.")
+                if not document_ids:
+                    raise BookError("document_ids cannot be empty.")
+                if len(set(document_ids)) != len(document_ids):
+                    raise BookError("document_ids cannot contain duplicates.")
+
+                succeeded: list[dict[str, object]] = []
+                failed: list[dict[str, object]] = []
+                for document_id in document_ids:
+                    try:
+                        document, _ = library.document_info(document_id)
+                        if int(document["book_id"]) != book_id:
+                            raise BookError(f"Document '{document_id}' does not belong to this book.")
+                        if action == "refresh":
+                            succeeded.append(self.refresh_document(document_id))
+                        else:
+                            stale = library.is_document_stale(document_id)
+                            removed = library.remove_document(document_id)
+                            succeeded.append(document_payload(library, removed, stale=stale))
+                    except Exception as error:
+                        message = str(error) or "Unable to process this document."
+                        failed.append({"id": document_id, "error": message})
+                self.send_json(
+                    {
+                        "action": action,
+                        "requested": len(document_ids),
+                        "succeeded": succeeded,
+                        "failed": failed,
+                    }
                 )
-                self.send_json(document_payload(library, updated))
                 return
             body = self.parse_body()
             if path == "/api/books":

@@ -110,6 +110,23 @@ class BookCliTestCase(unittest.TestCase):
 
         self.assertEqual({result["title"] for result in results}, {"prefix", "substring"})
 
+    def test_search_limit_and_offset_produce_stable_pages(self) -> None:
+        self.add_book()
+        document_ids = []
+        for index in range(5):
+            source = self.sources / f"chapter-{index}.txt"
+            source.write_text(f"shared search phrase {index}", encoding="utf-8")
+            document_ids.append(self.add_document("Study", source, f"Chapter {index}"))
+
+        library = Library(self.data_dir)
+        first_page = library.search("shared search", "Study", limit=2)
+        second_page = library.search("shared search", "Study", limit=2, offset=2)
+        last_page = library.search("shared search", "Study", limit=2, offset=4)
+
+        self.assertEqual([result["id"] for result in first_page], document_ids[:2])
+        self.assertEqual([result["id"] for result in second_page], document_ids[2:4])
+        self.assertEqual([result["id"] for result in last_page], document_ids[4:])
+
     def test_bulk_import_rolls_back_unless_continue_is_requested(self) -> None:
         first = self.sources / "first.txt"
         missing = self.sources / "missing.txt"
@@ -460,6 +477,14 @@ class BookCliTestCase(unittest.TestCase):
             second_document = request_json(
                 f"{base}/api/books/{book['id']}/documents", {"path": str(second)}, "POST"
             )
+            first_search_page = request_json(
+                f"{base}/api/search?q=Web&book={book['id']}&limit=1&offset=0"
+            )
+            second_search_page = request_json(
+                f"{base}/api/search?q=Web&book={book['id']}&limit=1&offset=1"
+            )
+            self.assertEqual([item["id"] for item in first_search_page], [document_id])
+            self.assertEqual([item["id"] for item in second_search_page], [second_document["id"]])
             archive_dir = library.document_dir(document_id)
             self.assertTrue(archive_dir.is_dir())
             removed = request_json(f"{base}/api/documents/{document_id}", method="DELETE")
@@ -478,6 +503,152 @@ class BookCliTestCase(unittest.TestCase):
                 app_script = response.read().decode("utf-8")
             self.assertIn('aria-label="Delete chapter"', app_script)
             self.assertIn("async function deleteChapter", app_script)
+            self.assertIn("const SEARCH_PAGE_SIZE = 20", app_script)
+            self.assertIn("data-search-more", app_script)
+        finally:
+            server.shutdown()
+            thread.join(timeout=2)
+            server.server_close()
+
+    def test_web_batch_document_refresh_and_delete(self) -> None:
+        first = self.sources / "batch-first.txt"
+        second = self.sources / "batch-second.txt"
+        first.write_text("First", encoding="utf-8")
+        second.write_text("Second", encoding="utf-8")
+        self.add_book("Batch")
+        first_id = self.add_document("Batch", first)
+        second_id = self.add_document("Batch", second)
+        library = Library(self.data_dir)
+        first_document, _ = library.document_info(first_id)
+        first_entry_path = first_document["entry_path"]
+        first.write_text("First updated", encoding="utf-8")
+
+        server = create_server(library, 0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+
+        def request_json(path: str, payload: dict[str, object], method: str = "POST") -> object:
+            data = json.dumps(payload).encode("utf-8")
+            request = Request(path, data=data, method=method, headers={"Content-Type": "application/json"})
+            with urlopen(request) as response:
+                return json.load(response)
+
+        try:
+            refreshed = request_json(
+                f"{base}/api/books/1/documents/batch",
+                {"action": "refresh", "document_ids": [first_id, 999999]},
+            )
+            self.assertEqual(refreshed["action"], "refresh")
+            self.assertEqual(refreshed["requested"], 2)
+            self.assertEqual([item["id"] for item in refreshed["succeeded"]], [first_id])
+            self.assertEqual(refreshed["failed"][0]["id"], 999999)
+            self.assertEqual(
+                (library.document_dir(first_id) / first_entry_path).read_text(encoding="utf-8"),
+                "First updated",
+            )
+
+            deleted = request_json(
+                f"{base}/api/books/1/documents/batch",
+                {"action": "delete", "document_ids": [first_id, second_id]},
+            )
+            self.assertEqual([item["id"] for item in deleted["succeeded"]], [first_id, second_id])
+            self.assertEqual(deleted["failed"], [])
+            self.assertTrue(first.is_file())
+            self.assertTrue(second.is_file())
+            self.assertFalse(library.document_dir(first_id).exists())
+            self.assertFalse(library.document_dir(second_id).exists())
+
+            for invalid in (
+                {"action": "refresh", "document_ids": []},
+                {"action": "refresh", "document_ids": [first_id, first_id]},
+                {"action": "unknown", "document_ids": [first_id]},
+                {"action": "refresh", "document_ids": [True]},
+            ):
+                with self.assertRaises(HTTPError) as error:
+                    request_json(f"{base}/api/books/1/documents/batch", invalid)
+                self.assertEqual(error.exception.code, 400)
+        finally:
+            server.shutdown()
+            thread.join(timeout=2)
+            server.server_close()
+
+    def test_web_batch_partial_refresh_preserves_archive_and_rejects_cross_book_ids(self) -> None:
+        first = self.sources / "partial-first.txt"
+        second = self.sources / "partial-second.txt"
+        foreign = self.sources / "foreign.txt"
+        first.write_text("first original", encoding="utf-8")
+        second.write_text("second original", encoding="utf-8")
+        foreign.write_text("foreign", encoding="utf-8")
+        self.add_book("Batch")
+        first_id = self.add_document("Batch", first)
+        second_id = self.add_document("Batch", second)
+        self.add_book("Other")
+        foreign_id = self.add_document("Other", foreign)
+        library = Library(self.data_dir)
+        first_document, _ = library.document_info(first_id)
+        first_archive = library.document_dir(first_id) / first_document["entry_path"]
+        first_archive_before = first_archive.read_bytes()
+        first.unlink()
+        second.write_text("second updated", encoding="utf-8")
+
+        server = create_server(library, 0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+
+        def request_json(path: str, payload: dict[str, object]) -> dict[str, object]:
+            request = Request(
+                path,
+                data=json.dumps(payload).encode("utf-8"),
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            with urlopen(request) as response:
+                return json.load(response)
+
+        try:
+            result = request_json(
+                f"{base}/api/books/1/documents/batch",
+                {"action": "refresh", "document_ids": [first_id, second_id, foreign_id]},
+            )
+            self.assertEqual([item["id"] for item in result["succeeded"]], [second_id])
+            self.assertEqual({item["id"] for item in result["failed"]}, {first_id, foreign_id})
+            self.assertEqual(first_archive.read_bytes(), first_archive_before)
+            second_document, _ = library.document_info(second_id)
+            self.assertEqual(
+                (library.document_dir(second_id) / second_document["entry_path"]).read_text(encoding="utf-8"),
+                "second updated",
+            )
+        finally:
+            server.shutdown()
+            thread.join(timeout=2)
+            server.server_close()
+
+    def test_web_batch_delete_reindexes_remaining_positions(self) -> None:
+        sources = [self.sources / f"position-{index}.txt" for index in range(3)]
+        for index, source in enumerate(sources):
+            source.write_text(f"chapter {index}", encoding="utf-8")
+        self.add_book("Positions")
+        document_ids = [self.add_document("Positions", source) for source in sources]
+        library = Library(self.data_dir)
+        server = create_server(library, 0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        try:
+            request = Request(
+                f"{base}/api/books/1/documents/batch",
+                data=json.dumps({"action": "delete", "document_ids": [document_ids[0], document_ids[1]]}).encode("utf-8"),
+                method="POST",
+                headers={"Content-Type": "application/json"},
+            )
+            with urlopen(request) as response:
+                result = json.load(response)
+            self.assertEqual([item["id"] for item in result["succeeded"]], document_ids[:2])
+            remaining = Library(self.data_dir).get_book_for_web(1)["documents"]
+            self.assertEqual([(item["id"], item["position"]) for item in remaining], [(document_ids[2], 1)])
+            self.assertTrue(all(source.is_file() for source in sources))
         finally:
             server.shutdown()
             thread.join(timeout=2)
