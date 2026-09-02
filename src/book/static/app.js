@@ -29,8 +29,8 @@ const LOCALES = {
     createBook: 'Create a book to start building your shelf.', reading: 'Reading', back: 'Back to books',
     editBook: 'Edit book', deleteBook: 'Delete book', theme: 'Theme', light: 'Light', dark: 'Dark', progress: 'Progress',
     contents: 'Contents', search: 'Search chapters', searchBook: 'Search this book', chaptersTitle: 'Chapters',
-    select: 'Select', exitSelect: 'Done', selectAll: 'Select all', clearSelection: 'Clear', selected: 'selected', batchAction: 'Batch action', batchToolbar: 'Batch chapter actions',
-    refreshSelected: 'Refresh selected', deleteSelected: 'Delete selected', apply: 'Apply', cancel: 'Cancel',
+    select: 'Select', exitSelect: 'Done', selectAll: 'Select all', clearSelection: 'Clear', selected: 'selected', batchAction: 'Batch action', batchToolbar: 'Batch chapter actions', bookActions: 'Book actions', chapterActions: 'Chapter actions',
+    refreshSelected: 'Refresh selected', deleteSelected: 'Delete selected', apply: 'Apply',
     confirmBatchDelete: 'Delete the selected chapters? Only archived copies will be removed.',
     confirmBatchRefresh: 'Refresh the selected chapters from their source files?', confirmRefreshChapter: 'Refresh this chapter from its source file?',
     batchProgress: 'Processing…', batchDone: (ok, fail) => `${ok} succeeded, ${fail} failed`,
@@ -48,8 +48,8 @@ const LOCALES = {
     createBook: '创建一本书，开始构建你的书架。', reading: '阅读中', back: '返回书架',
     editBook: '编辑书籍', deleteBook: '删除书籍', theme: '主题', light: '浅色', dark: '深色', progress: '进度',
     contents: '目录', search: '搜索章节', searchBook: '搜索本书', chaptersTitle: '章节',
-    select: '选择', exitSelect: '完成', selectAll: '全选', clearSelection: '清空', selected: '已选', batchAction: '批量操作', batchToolbar: '批量章节操作',
-    refreshSelected: '刷新所选', deleteSelected: '删除所选', apply: '执行', cancel: '取消',
+    select: '选择', exitSelect: '完成', selectAll: '全选', clearSelection: '清空', selected: '已选', batchAction: '批量操作', batchToolbar: '批量章节操作', bookActions: '书籍操作', chapterActions: '章节操作',
+    refreshSelected: '刷新所选', deleteSelected: '删除所选', apply: '执行',
     confirmBatchDelete: '删除所选章节？仅会删除归档副本。',
     confirmBatchRefresh: '从源文件刷新所选章节？', confirmRefreshChapter: '从源文件刷新此章节？',
     batchProgress: '处理中…', batchDone: (ok, fail) => `成功 ${ok} 项，失败 ${fail} 项`,
@@ -227,13 +227,21 @@ function renderReader() {
       <header class="reader-header">
         <button id="back" class="icon-button" type="button" title="${t('back')}" aria-label="${t('back')}">&larr;</button>
         <div class="reader-title-group"><span class="reader-kicker">${t('reading')}</span><h1>${escapeHtml(book.title)}</h1><p class="subtitle">${escapeHtml(book.description || `${documents.length} ${chapterLabel}`)}</p></div>
-        <div class="reader-actions"><button id="edit-book" class="icon-button" type="button" title="${t('editBook')}" aria-label="${t('editBook')}">✎</button><button id="delete-book" class="icon-button" type="button" title="${t('deleteBook')}" aria-label="${t('deleteBook')}">×</button></div>
+        <div class="reader-actions">
+          <details class="action-menu book-menu">
+            <summary class="icon-button action-menu-trigger" title="${t('bookActions')}" aria-label="${t('bookActions')}" aria-haspopup="menu" aria-expanded="false">⋯</summary>
+            <div class="action-menu-panel" role="menu" aria-label="${t('bookActions')}">
+              <button id="edit-book" class="menu-item" role="menuitem" type="button" title="${t('editBook')}" aria-label="${t('editBook')}"><span class="menu-item-icon" aria-hidden="true">✎</span><span>${t('editBook')}</span></button>
+              <button id="delete-book" class="menu-item menu-item-danger" role="menuitem" type="button" title="${t('deleteBook')}" aria-label="${t('deleteBook')}"><span class="menu-item-icon" aria-hidden="true">×</span><span>${t('deleteBook')}</span></button>
+            </div>
+          </details>
+        </div>
         ${languagePicker()}<label class="theme-picker"><span>${t('theme')}</span><select id="theme" aria-label="${t('theme')}"><option value="light">${t('light')}</option><option value="dark">${t('dark')}</option></select></label>
         <div class="progress-wrap" aria-label="${t('progress')}"><div class="progress-copy"><span>${t('progress')}</span><strong id="progress-label">0%</strong></div><div class="progress-track" aria-hidden="true"><span id="progress-bar"></span></div></div>
       </header>
       <aside class="toc">
         <div class="toc-heading"><div><span class="toc-kicker">${t('contents')}</span><h2>${t('chaptersTitle')}</h2></div><div class="toc-heading-actions"><span class="toc-count">${documents.length}</span><button id="toggle-select" class="select-toggle" type="button">${state.selectMode ? t('exitSelect') : t('select')}</button></div></div>
-        ${state.selectMode ? `<div class="batch-toolbar" role="toolbar" aria-label="${t('batchToolbar')}"><label class="batch-check"><input id="select-all" type="checkbox"><span>${t('selectAll')}</span></label><button id="clear-selection" class="secondary-button" type="button">${t('clearSelection')}</button><span id="selection-count" aria-live="polite">0 ${t('selected')}</span><select id="batch-action" aria-label="${t('batchAction')}"><option value="refresh">${t('refreshSelected')}</option><option value="delete">${t('deleteSelected')}</option></select><button id="batch-apply" class="primary-button" type="button" disabled>${state.batchBusy ? t('batchProgress') : t('apply')}</button><button id="batch-cancel" class="secondary-button" type="button">${t('cancel')}</button></div>` : ''}
+        ${state.selectMode ? `<div class="batch-toolbar" role="toolbar" aria-label="${t('batchToolbar')}"><label class="batch-check"><input id="select-all" type="checkbox"><span>${t('selectAll')}</span></label><button id="clear-selection" class="secondary-button" type="button">${t('clearSelection')}</button><span id="selection-count" aria-live="polite">0 ${t('selected')}</span><select id="batch-action" aria-label="${t('batchAction')}"><option value="refresh">${t('refreshSelected')}</option><option value="delete">${t('deleteSelected')}</option></select><button id="batch-apply" class="primary-button" type="button" disabled>${state.batchBusy ? t('batchProgress') : t('apply')}</button></div>` : ''}
         <div id="batch-feedback" class="batch-feedback" role="status" aria-live="polite" hidden></div>
         <form id="search-form" class="search-form"><label class="sr-only" for="search-input">${t('searchBook')}</label><input id="search-input" autocomplete="off" placeholder="${t('search')}"><button title="${t('search')}" aria-label="${t('search')}" type="submit">&#8981;</button></form>
         <div id="search-results" class="search-results" role="region" aria-label="${t('searchResults')}" hidden></div>
@@ -264,10 +272,82 @@ function renderReader() {
   app.querySelector('#delete-book').addEventListener('click', deleteBook);
   bindSearch();
   bindChapters();
+  bindActionMenus();
   bindBatchControls();
   renderBatchFeedback();
   updateBookProgress();
 }
+
+// Keep overflow menus mutually exclusive and make their state discoverable to
+// assistive technology. Native <details> supplies keyboard toggling; this
+// small binding adds the expected close-on-action and close-on-open behavior.
+function bindActionMenus() {
+  const menus = [...app.querySelectorAll('details.action-menu')];
+  menus.forEach((menu) => {
+    const trigger = menu.querySelector('summary');
+    const syncExpanded = () => trigger?.setAttribute('aria-expanded', String(menu.open));
+    menu.addEventListener('toggle', () => {
+      syncExpanded();
+      if (!menu.open) return;
+      menus.forEach((other) => { if (other !== menu) other.open = false; });
+      if (menu.classList.contains('chapter-menu')) {
+        // The chapter list is a horizontal scroller on small screens. A fixed
+        // panel escapes that clipping context; position it after it is laid out.
+        positionChapterMenu(menu);
+        window.requestAnimationFrame(() => positionChapterMenu(menu));
+      }
+    });
+    syncExpanded();
+    menu.querySelectorAll('.menu-item').forEach((item) => item.addEventListener('click', () => {
+      menu.open = false;
+      trigger?.focus({ preventScroll: true });
+    }));
+    menu.addEventListener('keydown', (event) => {
+      const items = [...menu.querySelectorAll('.menu-item:not(:disabled)')];
+      if (!items.length) return;
+      const current = items.indexOf(document.activeElement);
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+        event.preventDefault();
+        const step = event.key === 'ArrowDown' ? 1 : -1;
+        const nextIndex = current < 0
+          ? (step > 0 ? 0 : items.length - 1)
+          : (current + step + items.length) % items.length;
+        items[nextIndex].focus();
+      } else if (event.key === 'Home' || event.key === 'End') {
+        event.preventDefault();
+        items[event.key === 'Home' ? 0 : items.length - 1].focus();
+      }
+    });
+  });
+}
+
+function positionChapterMenu(menu) {
+  if (!menu.open) return;
+  const trigger = menu.querySelector('summary');
+  const panel = menu.querySelector('.action-menu-panel');
+  if (!trigger || !panel) return;
+  const triggerRect = trigger.getBoundingClientRect();
+  const panelRect = panel.getBoundingClientRect();
+  const edge = 8;
+  const gap = 8;
+  // Prefer the side opposite the reading content when possible, then clamp to
+  // the viewport so a long translated label never creates horizontal scroll.
+  let left = triggerRect.left - panelRect.width - gap;
+  if (left < edge) left = triggerRect.right + gap;
+  left = Math.max(edge, Math.min(left, window.innerWidth - panelRect.width - edge));
+  let top = triggerRect.bottom + gap;
+  if (top + panelRect.height > window.innerHeight - edge) top = triggerRect.top - panelRect.height - gap;
+  top = Math.max(edge, Math.min(top, window.innerHeight - panelRect.height - edge));
+  panel.style.left = `${left}px`;
+  panel.style.top = `${top}px`;
+}
+
+function repositionOpenMenus() {
+  app.querySelectorAll('details.chapter-menu[open]').forEach(positionChapterMenu);
+}
+
+window.addEventListener('resize', repositionOpenMenus);
+document.addEventListener('scroll', repositionOpenMenus, true);
 
 async function editBook() {
   if (!state.book) return;
@@ -303,7 +383,18 @@ function chapterItem(document) {
   const stale = document.source_stale ? ` <span class="toc-stale" title="${t('sourceChanged')}">●</span>` : '';
   return `<li class="toc-item${selected}" draggable="${!state.selectMode}" data-document-id="${document.id}">
     ${state.selectMode ? `<label class="chapter-check"><input type="checkbox" data-select-document="${document.id}"${state.selectedDocumentIds.has(document.id) ? ' checked' : ''} aria-label="${t('select')} ${escapeHtml(document.title)}"></label>` : ''}<button class="toc-open" type="button"${document.id === state.currentDocumentId ? ' aria-current="page"' : ''}><span class="toc-position">${String(document.position).padStart(2, '0')}</span><span class="toc-title">${escapeHtml(document.title)}${stale}</span><span class="toc-progress" aria-label="${progress}% ${t('complete')}"><span style="width: ${progress}%"></span></span></button>
-    <span class="move-controls"${state.selectMode ? ' hidden' : ''}><button class="move-button" type="button" data-move="-1" title="${t('moveUp')}" aria-label="${t('moveUp')}"${first}>&#8593;</button><button class="move-button" type="button" data-move="1" title="${t('moveDown')}" aria-label="${t('moveDown')}"${last}>&#8595;</button><button class="move-button" type="button" data-rename title="${t('renameChapter')}" aria-label="${t('renameChapter')}">✎</button><button class="move-button" type="button" data-refresh title="${t('refreshChapter')}" aria-label="${t('refreshChapter')}">↻</button><button class="move-button danger-button" type="button" data-delete title="${t('deleteChapter')}" aria-label="${t('deleteChapter')}">&times;</button></span>
+    <div class="move-controls"${state.selectMode ? ' hidden' : ''}>
+      <details class="action-menu chapter-menu">
+        <summary class="move-button action-menu-trigger" title="${t('chapterActions')}" aria-label="${t('chapterActions')}" aria-haspopup="menu" aria-expanded="false">⋯</summary>
+        <div class="action-menu-panel" role="menu" aria-label="${t('chapterActions')}">
+          <button class="menu-item" role="menuitem" type="button" data-move="-1" title="${t('moveUp')}" aria-label="${t('moveUp')}"${first}><span class="menu-item-icon" aria-hidden="true">↑</span><span>${t('moveUp')}</span></button>
+          <button class="menu-item" role="menuitem" type="button" data-move="1" title="${t('moveDown')}" aria-label="${t('moveDown')}"${last}><span class="menu-item-icon" aria-hidden="true">↓</span><span>${t('moveDown')}</span></button>
+          <button class="menu-item" role="menuitem" type="button" data-rename title="${t('renameChapter')}" aria-label="${t('renameChapter')}"><span class="menu-item-icon" aria-hidden="true">✎</span><span>${t('renameChapter')}</span></button>
+          <button class="menu-item" role="menuitem" type="button" data-refresh title="${t('refreshChapter')}" aria-label="${t('refreshChapter')}"><span class="menu-item-icon" aria-hidden="true">↻</span><span>${t('refreshChapter')}</span></button>
+          <button class="menu-item menu-item-danger" role="menuitem" type="button" data-delete title="${t('deleteChapter')}" aria-label="${t('deleteChapter')}"><span class="menu-item-icon" aria-hidden="true">×</span><span>${t('deleteChapter')}</span></button>
+        </div>
+      </details>
+    </div>
   </li>`;
 }
 
@@ -427,12 +518,6 @@ function bindBatchControls() {
   app.querySelector('#toggle-select')?.addEventListener('click', () => {
     state.selectMode = !state.selectMode;
     if (!state.selectMode) state.selectedDocumentIds.clear();
-    renderReader();
-    if (state.currentDocumentId) selectDocument(state.currentDocumentId, false);
-  });
-  app.querySelector('#batch-cancel')?.addEventListener('click', () => {
-    state.selectMode = false;
-    state.selectedDocumentIds.clear();
     renderReader();
     if (state.currentDocumentId) selectDocument(state.currentDocumentId, false);
   });
@@ -833,14 +918,30 @@ window.addEventListener('hashchange', handleNavigation);
 window.addEventListener('popstate', handleNavigation);
 
 window.addEventListener('keydown', (event) => {
-  if (!state.book || ['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement?.tagName)) return;
-  if (event.key === 'ArrowLeft') {
+  if (!state.book) return;
+  const menuOpen = document.activeElement?.closest?.('details.action-menu[open]');
+  if (event.key === 'Escape') {
+    const openMenu = app.querySelector('details.action-menu[open]');
+    if (openMenu) {
+      event.preventDefault();
+      openMenu.open = false;
+      openMenu.querySelector('summary')?.focus();
+    }
+    return;
+  }
+  if (['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement?.tagName)) return;
+  if (!menuOpen && event.key === 'ArrowLeft') {
     event.preventDefault();
     adjacentDocument(-1);
-  } else if (event.key === 'ArrowRight') {
+  } else if (!menuOpen && event.key === 'ArrowRight') {
     event.preventDefault();
     adjacentDocument(1);
   }
+});
+
+document.addEventListener('click', (event) => {
+  if (event.target?.closest?.('details.action-menu')) return;
+  app.querySelectorAll('details.action-menu[open]').forEach((menu) => { menu.open = false; });
 });
 
 boot();
