@@ -38,9 +38,10 @@ const LOCALES = {
     language: 'Language', english: 'English', chinese: '简体中文',
     opening: 'Opening book', loadingLibrary: 'Loading library', unableCreate: 'Unable to create this book', unableEdit: 'Unable to edit this book', unableDeleteBook: 'Unable to delete this book', unableOpen: 'Unable to open this book', unableLoad: 'Unable to load the library', unableRename: 'Unable to rename this chapter', unableRefresh: 'Unable to refresh this chapter', unableOrder: 'Unable to save chapter order', unableMove: 'Unable to move this chapter',
     titlePrompt: 'Book title', descriptionPrompt: 'Description (optional)', chapterTitlePrompt: 'Chapter title',
-    searchResults: 'Search results', searching: 'Searching…', noMatches: 'No matches', titleMatch: 'Title match', loadMore: 'Load more', tryAgain: 'Try again', loading: 'Loading…', complete: 'complete', requestFailed: 'Request failed.', invalidSearchResponse: 'Search returned an invalid response.', sourceChanged: 'Source file changed', moveUp: 'Move chapter up', moveDown: 'Move chapter down', renameChapter: 'Rename chapter', refreshChapter: 'Refresh chapter', deleteChapter: 'Delete chapter', unableSaveTheme: 'Unable to save theme', unableSelect: 'Unable to select this chapter', unableDelete: 'Unable to delete this chapter', chapterPositionSaveFailed: 'Chapter deleted, but the new reading position could not be saved', batchItemFailed: 'Request failed.',
+    searchResults: 'Search results', searching: 'Searching…', noMatches: 'No matches', titleMatch: 'Title match', loadMore: 'Load more', tryAgain: 'Try again', loading: 'Loading…', complete: 'complete', requestFailed: 'Request failed.', invalidSearchResponse: 'Search returned an invalid response.', sourceChanged: 'Source file changed', sourcePath: 'Source file', moveUp: 'Move chapter up', moveDown: 'Move chapter down', renameChapter: 'Rename chapter', refreshChapter: 'Refresh chapter', deleteChapter: 'Delete chapter', unableSaveTheme: 'Unable to save theme', unableSelect: 'Unable to select this chapter', unableDelete: 'Unable to delete this chapter', chapterPositionSaveFailed: 'Chapter deleted, but the new reading position could not be saved', batchItemFailed: 'Request failed.',
     confirmDeleteBook: (title) => `Delete “${title}” and its archived chapters?`, confirmDeleteChapter: (title) => `Delete chapter “${title}”?\n\nOnly the archived copy will be removed. The original source file will stay on disk.`,
     searchMore: (count) => `Showing ${count} results. More matches available.`, searchAll: (count) => `All ${count} results shown.`,
+    save: 'Save', cancel: 'Cancel', close: 'Close', requiredTitle: 'Enter a title to continue.', saved: 'Saved',
   },
   'zh-CN': {
     shelves: '书架', appName: '书籍', newBook: '新建书籍', book: '本书', books: '本书',
@@ -57,9 +58,10 @@ const LOCALES = {
     language: '语言', english: 'English', chinese: '简体中文',
     opening: '正在打开书籍', loadingLibrary: '正在加载书架', unableCreate: '无法创建书籍', unableEdit: '无法编辑书籍', unableDeleteBook: '无法删除书籍', unableOpen: '无法打开书籍', unableLoad: '无法加载书架', unableRename: '无法重命名章节', unableRefresh: '无法刷新章节', unableOrder: '无法保存章节顺序', unableMove: '无法移动章节',
     titlePrompt: '书名', descriptionPrompt: '描述（可选）', chapterTitlePrompt: '章节标题',
-    searchResults: '搜索结果', searching: '搜索中…', noMatches: '没有匹配项', titleMatch: '标题匹配', loadMore: '加载更多', tryAgain: '重试', loading: '加载中…', complete: '已完成', requestFailed: '请求失败。', invalidSearchResponse: '搜索返回了无效结果。', sourceChanged: '源文件已更改', moveUp: '上移章节', moveDown: '下移章节', renameChapter: '重命名章节', refreshChapter: '刷新章节', deleteChapter: '删除章节', unableSaveTheme: '无法保存主题', unableSelect: '无法选择此章节', unableDelete: '无法删除此章节', chapterPositionSaveFailed: '章节已删除，但无法保存新的阅读位置', batchItemFailed: '请求失败。',
+    searchResults: '搜索结果', searching: '搜索中…', noMatches: '没有匹配项', titleMatch: '标题匹配', loadMore: '加载更多', tryAgain: '重试', loading: '加载中…', complete: '已完成', requestFailed: '请求失败。', invalidSearchResponse: '搜索返回了无效结果。', sourceChanged: '源文件已更改', sourcePath: '源文件', moveUp: '上移章节', moveDown: '下移章节', renameChapter: '重命名章节', refreshChapter: '刷新章节', deleteChapter: '删除章节', unableSaveTheme: '无法保存主题', unableSelect: '无法选择此章节', unableDelete: '无法删除此章节', chapterPositionSaveFailed: '章节已删除，但无法保存新的阅读位置', batchItemFailed: '请求失败。',
     confirmDeleteBook: (title) => `删除“${title}”及其归档章节？`, confirmDeleteChapter: (title) => `删除章节“${title}”？\n\n仅会删除归档副本，原始源文件将保留。`,
     searchMore: (count) => `显示 ${count} 条结果，还有更多结果。`, searchAll: (count) => `已显示全部 ${count} 条结果。`,
+    save: '保存', cancel: '取消', close: '关闭', requiredTitle: '请输入标题后继续。', saved: '已保存',
   },
 };
 function t(key, ...args) { const value = LOCALES[state.locale][key] ?? LOCALES.en[key] ?? key; return typeof value === 'function' ? value(...args) : value; }
@@ -72,6 +74,65 @@ function setLocale(locale) {
 }
 function languagePicker() {
   return `<label class="language-picker"><span>${t('language')}</span><select id="locale" aria-label="${t('language')}"><option value="en"${state.locale === 'en' ? ' selected' : ''}>${t('english')}</option><option value="zh-CN"${state.locale === 'zh-CN' ? ' selected' : ''}>${t('chinese')}</option></select></label>`;
+}
+
+function showToast(message, tone = 'error') {
+  let region = app.querySelector('#toast-region');
+  if (!region) {
+    region = document.createElement('div');
+    region.id = 'toast-region';
+    region.className = 'toast-region';
+    region.setAttribute('aria-live', 'polite');
+    app.append(region);
+  }
+  const toast = document.createElement('div');
+  toast.className = `toast toast-${tone}`;
+  toast.setAttribute('role', tone === 'error' ? 'alert' : 'status');
+  toast.textContent = message;
+  region.append(toast);
+  window.setTimeout(() => toast.remove(), tone === 'error' ? 6000 : 3000);
+}
+
+function showEditorDialog({ heading, title = '', titleLabel = t('titlePrompt'), description = null }) {
+  const dialog = document.createElement('dialog');
+  dialog.className = 'editor-dialog';
+  const descriptionField = description === null ? '' : `
+      <label class="dialog-field"><span>${t('descriptionPrompt')}</span><textarea name="description" rows="4">${escapeHtml(description)}</textarea></label>`;
+  dialog.innerHTML = `
+    <form method="dialog" class="dialog-card">
+      <header class="dialog-header"><h2>${escapeHtml(heading)}</h2><button class="dialog-close" value="cancel" type="submit" aria-label="${t('close')}">×</button></header>
+      <label class="dialog-field"><span>${titleLabel}</span><input name="title" value="${escapeHtml(title)}" autocomplete="off" required></label>
+      ${descriptionField}
+      <p class="dialog-error" role="alert" hidden></p>
+      <footer class="dialog-actions"><button class="secondary-button" value="cancel" type="submit">${t('cancel')}</button><button class="primary-button" value="save" type="submit">${t('save')}</button></footer>
+    </form>`;
+  document.body.append(dialog);
+  const form = dialog.querySelector('form');
+  const titleInput = dialog.querySelector('[name="title"]');
+  const error = dialog.querySelector('.dialog-error');
+  const cleanup = () => window.setTimeout(() => dialog.remove(), 0);
+  const result = new Promise((resolve) => {
+    const cancel = (event) => {
+      event?.preventDefault();
+      resolve(null);
+      if (dialog.open) dialog.close('cancel');
+      cleanup();
+    };
+    form.addEventListener('submit', (event) => {
+      if (event.submitter?.value !== 'save') { cancel(event); return; }
+      event.preventDefault();
+      const nextTitle = titleInput.value.trim();
+      if (!nextTitle) { error.textContent = t('requiredTitle'); error.hidden = false; titleInput.focus(); return; }
+      resolve({ title: nextTitle, description: dialog.querySelector('[name="description"]')?.value ?? null });
+      dialog.close('save');
+      cleanup();
+    });
+    dialog.querySelectorAll('[value="cancel"]').forEach((button) => button.addEventListener('click', cancel));
+    dialog.addEventListener('cancel', cancel, { once: true });
+  });
+  if (typeof dialog.showModal === 'function') dialog.showModal(); else dialog.setAttribute('open', '');
+  window.requestAnimationFrame(() => titleInput.focus());
+  return result;
 }
 
 function renderBatchFeedback() {
@@ -175,6 +236,11 @@ function clearReaderError() {
   app.querySelector('.reader-error')?.remove();
 }
 
+function updateDocumentSource(document) {
+  const source = app.querySelector('#document-source-path');
+  if (source) source.textContent = document?.source_path || '';
+}
+
 function renderLibrary(books) {
   cancelProgressSave();
   state.book = null;
@@ -207,14 +273,13 @@ function renderLibrary(books) {
 }
 
 async function createBook() {
-  const title = window.prompt(t('titlePrompt'));
-  if (!title?.trim()) return;
-  const description = window.prompt(t('descriptionPrompt'), '') || '';
+  const values = await showEditorDialog({ heading: t('newBook'), description: '' });
+  if (!values) return;
   try {
-    const book = await request('/api/books', { method: 'POST', body: JSON.stringify({ title: title.trim(), description }) });
+    const book = await request('/api/books', { method: 'POST', body: JSON.stringify({ title: values.title, description: values.description || '' }) });
     await loadBook(book.id);
   } catch (error) {
-    renderStatus(t('unableCreate'), error.message);
+    showToast(`${t('unableCreate')}: ${error.message}`);
   }
 }
 
@@ -228,10 +293,10 @@ function renderReader() {
         <button id="back" class="icon-button" type="button" title="${t('back')}" aria-label="${t('back')}">&larr;</button>
         <div class="reader-title-group"><span class="reader-kicker">${t('reading')}</span><h1>${escapeHtml(book.title)}</h1><p class="subtitle">${escapeHtml(book.description || `${documents.length} ${chapterLabel}`)}</p></div>
         <div class="reader-actions">
+          <button id="edit-book" class="secondary-button reader-edit" type="button" title="${t('editBook')}"><span aria-hidden="true">✎</span><span>${t('editBook')}</span></button>
           <details class="action-menu book-menu">
             <summary class="icon-button action-menu-trigger" title="${t('bookActions')}" aria-label="${t('bookActions')}" aria-haspopup="menu" aria-expanded="false">⋯</summary>
             <div class="action-menu-panel" role="menu" aria-label="${t('bookActions')}">
-              <button id="edit-book" class="menu-item" role="menuitem" type="button" title="${t('editBook')}" aria-label="${t('editBook')}"><span class="menu-item-icon" aria-hidden="true">✎</span><span>${t('editBook')}</span></button>
               <button id="delete-book" class="menu-item menu-item-danger" role="menuitem" type="button" title="${t('deleteBook')}" aria-label="${t('deleteBook')}"><span class="menu-item-icon" aria-hidden="true">×</span><span>${t('deleteBook')}</span></button>
             </div>
           </details>
@@ -247,7 +312,7 @@ function renderReader() {
         <div id="search-results" class="search-results" role="region" aria-label="${t('searchResults')}" hidden></div>
         <ol id="toc-list" class="toc-list">${documents.map((document) => chapterItem(document)).join('')}</ol>
       </aside>
-      <main class="reading-area">${documents.length ? `<iframe id="reader-frame" class="reader-frame" title="${t('reading')}" sandbox="allow-same-origin allow-popups"></iframe><nav class="chapter-nav" aria-label="${t('chaptersTitle')}"><button id="previous" type="button"><span aria-hidden="true">&larr;</span> ${t('previous')}</button><span id="chapter-position" class="chapter-position" aria-live="polite"></span><button id="next" type="button">${t('next')} <span aria-hidden="true">&rarr;</span></button></nav>` : `<div class="reader-empty"><strong>${t('noChapters')}</strong><span>${t('addChapter')}</span></div>`}</main>
+      <main class="reading-area">${documents.length ? `<div class="document-source" aria-label="${t('sourcePath')}"><span class="document-source-label">${t('sourcePath')}</span><code id="document-source-path">${escapeHtml(documents.find((document) => document.id === state.currentDocumentId)?.source_path || '')}</code></div><iframe id="reader-frame" class="reader-frame" title="${t('reading')}" sandbox="allow-same-origin allow-popups"></iframe><nav class="chapter-nav" aria-label="${t('chaptersTitle')}"><button id="previous" type="button"><span aria-hidden="true">&larr;</span> ${t('previous')}</button><span id="chapter-position" class="chapter-position" aria-live="polite"></span><button id="next" type="button">${t('next')} <span aria-hidden="true">&rarr;</span></button></nav>` : `<div class="reader-empty"><strong>${t('noChapters')}</strong><span>${t('addChapter')}</span></div>`}</main>
     </div>`;
   const theme = app.querySelector('#theme');
   app.querySelector('#locale')?.addEventListener('change', (event) => setLocale(event.target.value));
@@ -291,8 +356,6 @@ function bindActionMenus() {
       if (!menu.open) return;
       menus.forEach((other) => { if (other !== menu) other.open = false; });
       if (menu.classList.contains('chapter-menu')) {
-        // The chapter list is a horizontal scroller on small screens. A fixed
-        // panel escapes that clipping context; position it after it is laid out.
         positionChapterMenu(menu);
         window.requestAnimationFrame(() => positionChapterMenu(menu));
       }
@@ -330,8 +393,6 @@ function positionChapterMenu(menu) {
   const panelRect = panel.getBoundingClientRect();
   const edge = 8;
   const gap = 8;
-  // Prefer the side opposite the reading content when possible, then clamp to
-  // the viewport so a long translated label never creates horizontal scroll.
   let left = triggerRect.left - panelRect.width - gap;
   if (left < edge) left = triggerRect.right + gap;
   left = Math.max(edge, Math.min(left, window.innerWidth - panelRect.width - edge));
@@ -351,16 +412,14 @@ document.addEventListener('scroll', repositionOpenMenus, true);
 
 async function editBook() {
   if (!state.book) return;
-  const title = window.prompt(t('titlePrompt'), state.book.title);
-  if (!title?.trim()) return;
-  const description = window.prompt(t('descriptionPrompt'), state.book.description || '');
-  if (description === null) return;
+  const values = await showEditorDialog({ heading: t('editBook'), title: state.book.title, description: state.book.description || '' });
+  if (!values) return;
   try {
-    state.book = await request(`/api/books/${state.book.id}`, { method: 'PATCH', body: JSON.stringify({ title: title.trim(), description }) });
+    state.book = await request(`/api/books/${state.book.id}`, { method: 'PATCH', body: JSON.stringify({ title: values.title, description: values.description || '' }) });
     renderReader();
     if (state.currentDocumentId) selectDocument(state.currentDocumentId, false);
   } catch (error) {
-    renderStatus(t('unableEdit'), error.message);
+    showToast(`${t('unableEdit')}: ${error.message}`);
   }
 }
 
@@ -371,7 +430,7 @@ async function deleteBook() {
     await request(`/api/books/${state.book.id}?with_documents=true`, { method: 'DELETE' });
     await showLibrary();
   } catch (error) {
-    renderStatus(t('unableDeleteBook'), error.message);
+    showToast(`${t('unableDeleteBook')}: ${error.message}`);
   }
 }
 
@@ -435,13 +494,13 @@ function bindChapters() {
 async function renameChapter(documentId) {
   const document = state.book?.documents.find((item) => item.id === documentId);
   if (!document) return;
-  const title = window.prompt(t('chapterTitlePrompt'), document.title);
-  if (!title?.trim()) return;
+  const values = await showEditorDialog({ heading: t('renameChapter'), title: document.title, titleLabel: t('chapterTitlePrompt') });
+  if (!values) return;
   try {
-    await request(`/api/documents/${documentId}`, { method: 'PATCH', body: JSON.stringify({ title: title.trim() }) });
+    await request(`/api/documents/${documentId}`, { method: 'PATCH', body: JSON.stringify({ title: values.title }) });
     await loadBook(state.book.id, state.currentDocumentId);
   } catch (error) {
-    renderStatus(t('unableRename'), error.message);
+    showToast(`${t('unableRename')}: ${error.message}`);
   }
 }
 
@@ -451,7 +510,7 @@ async function refreshChapter(documentId) {
     await request(`/api/documents/${documentId}/refresh`, { method: 'POST', body: JSON.stringify({}) });
     await loadBook(state.book.id, documentId);
   } catch (error) {
-    renderStatus(t('unableRefresh'), error.message);
+    showToast(`${t('unableRefresh')}: ${error.message}`);
   }
 }
 
@@ -620,7 +679,7 @@ async function moveChapter(documentId, direction) {
     renderReader();
     selectDocument(state.currentDocumentId, false);
   } catch (error) {
-    renderStatus(t('unableMove'), error.message);
+    showToast(`${t('unableMove')}: ${error.message}`);
     await loadBook(state.book.id, state.currentDocumentId);
   }
 }
@@ -749,6 +808,7 @@ async function selectDocument(documentId, saveState = true) {
   }
   if (selectionGeneration !== state.progressGeneration) return;
   state.currentDocumentId = documentId;
+  updateDocumentSource(document);
   app.querySelectorAll('.toc-item').forEach((item) => {
     const isSelected = Number(item.dataset.documentId) === documentId;
     item.classList.toggle('selected', isSelected);

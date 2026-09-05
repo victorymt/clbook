@@ -67,6 +67,8 @@ book doc info 1
 
 `book doc info` shows the source path, archive location, and whether the source file has changed since the last import. Refreshing re-archives the source and its local resources without deleting the original file; a previously configured `--resource-root` is reused automatically.
 
+Successful CLI imports print the resolved source file path. The web reader shows the same path above the current chapter; the local web API includes it in document metadata.
+
 ## Read And Search
 
 ```bash

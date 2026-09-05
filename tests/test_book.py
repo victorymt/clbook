@@ -83,6 +83,16 @@ class BookCliTestCase(unittest.TestCase):
         self.assertEqual(status, 0, error)
         self.assertIn("Matrices", output)
 
+    def test_add_reports_resolved_source_path(self) -> None:
+        source = self.sources / "chapter.md"
+        source.write_text("# Chapter", encoding="utf-8")
+        self.add_book()
+
+        status, output, error = self.invoke("doc", "add", "Study", str(source))
+
+        self.assertEqual(status, 0, error)
+        self.assertIn(f"Source: {source.resolve()}", output)
+
     def test_remove_never_deletes_the_original_source(self) -> None:
         source = self.sources / "notes.txt"
         source.write_text("Keep this original file.", encoding="utf-8")
@@ -189,6 +199,8 @@ class BookCliTestCase(unittest.TestCase):
             with urlopen(f"{base}/documents/{document_id}/content") as response:
                 body = response.read().decode("utf-8")
                 self.assertIn("Vectors", body)
+                self.assertIn("overflow-wrap: anywhere", body)
+                self.assertIn("max-width: 100%", body)
                 self.assertIn("script-src 'none'", response.headers["Content-Security-Policy"])
             with urlopen(f"{base}/documents/{document_id}/content?theme=dark") as response:
                 body = response.read().decode("utf-8")
@@ -453,12 +465,13 @@ class BookCliTestCase(unittest.TestCase):
                 f"{base}/api/books/{book['id']}/documents", {"path": str(source)}, "POST"
             )
             document_id = document["id"]
-            self.assertNotIn("source_path", document)
+            self.assertEqual(document["source_path"], str(source.resolve()))
             self.assertNotIn("content", document)
             updated_book = request_json(
                 f"{base}/api/books/{book['id']}", {"description": "Updated"}, "PATCH"
             )
             self.assertEqual(updated_book["documents"][0]["id"], document_id)
+            self.assertEqual(updated_book["documents"][0]["source_path"], str(source.resolve()))
             request_json(f"{base}/api/documents/{document_id}", {"title": "Renamed"}, "PATCH")
             request_json(f"{base}/api/books/{book['id']}/state", {"last_document_id": document_id, "theme": "dark"}, "PUT")
             state = request_json(f"{base}/api/books/{book['id']}/state", {"theme": "light"}, "PUT")
@@ -505,6 +518,8 @@ class BookCliTestCase(unittest.TestCase):
             self.assertIn("async function deleteChapter", app_script)
             self.assertIn("const SEARCH_PAGE_SIZE = 20", app_script)
             self.assertIn("data-search-more", app_script)
+            self.assertIn("document-source-path", app_script)
+            self.assertIn("sourcePath", app_script)
         finally:
             server.shutdown()
             thread.join(timeout=2)

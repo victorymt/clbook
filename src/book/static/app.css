@@ -71,8 +71,13 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px s
 .move-button.danger-button { color: var(--focus); }
 .move-button.danger-button:hover { border-color: var(--focus); background: color-mix(in srgb, var(--focus) 10%, var(--surface)); color: var(--focus); }
 .move-button:disabled { cursor: default; opacity: .32; }
-.reading-area { display: grid; grid-template-rows: minmax(0, 1fr) auto; min-width: 0; min-height: 0; background: var(--surface); }
+.chapter-menu .move-button { font-size: 21px; letter-spacing: .04em; }
+.chapter-menu .action-menu-panel { position: fixed; top: 0; right: auto; transform: none; }
+.reading-area { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; min-width: 0; min-height: 0; background: var(--surface); }
 .reader-frame { width: 100%; height: 100%; border: 0; background: var(--surface); }
+.document-source { display: flex; align-items: baseline; gap: 8px; min-width: 0; border-bottom: 1px solid var(--line); background: var(--surface); padding: 9px 20px; color: var(--muted); font-size: 12px; line-height: 1.4; }
+.document-source-label { flex: 0 0 auto; font-weight: 650; }
+.document-source code { min-width: 0; overflow-wrap: anywhere; color: var(--ink); font-family: "SFMono-Regular", Consolas, monospace; font-size: 11px; }
 .chapter-nav { display: flex; justify-content: space-between; gap: 12px; border-top: 1px solid var(--line); background: var(--surface); padding: 12px 20px; }
 .chapter-nav button { min-width: 102px; height: 34px; border-radius: 4px; padding: 0 11px; font-size: 13px; }
 .chapter-nav button:disabled { cursor: default; opacity: .45; }
@@ -245,6 +250,7 @@ body { color: var(--ink); font-family: Inter, ui-sans-serif, system-ui, -apple-s
   .toc-item.selected { border-color: var(--accent); border-left-color: var(--accent); }
   .toc-open { min-height: 68px; }
   .move-controls { justify-content: flex-end; padding: 0 7px 7px; opacity: 1; }
+  .document-source { align-items: flex-start; flex-direction: column; gap: 3px; padding: 9px 14px; }
   .chapter-nav { min-height: 58px; padding: 10px 14px; }
   .chapter-nav button { min-width: 94px; height: 36px; }
 }
@@ -305,8 +311,8 @@ body { color: var(--ink); font-family: Inter, ui-sans-serif, system-ui, -apple-s
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
 
-/* Quiet actions: management controls live behind one predictable overflow
-   trigger so reading and navigation remain the visual priority. */
+/* Secondary destructive actions live behind one predictable overflow trigger;
+   chapter actions stay visible beside each title. */
 .action-menu { position: relative; }
 .action-menu > summary { list-style: none; }
 .action-menu > summary::-webkit-details-marker { display: none; }
@@ -354,25 +360,66 @@ body { color: var(--ink); font-family: Inter, ui-sans-serif, system-ui, -apple-s
 .book-menu .action-menu-trigger { font-size: 22px; letter-spacing: .04em; }
 .move-controls { opacity: .68; }
 .toc-item:hover .move-controls, .move-controls:focus-within { opacity: 1; }
-.chapter-menu .move-button { font-size: 17px; font-weight: 700; letter-spacing: .02em; }
 
 @media (max-width: 760px) {
   .menu-item { min-height: 38px; }
-  .chapter-menu .move-button { width: 38px; height: 34px; }
 }
 
 @media (max-width: 360px) {
   .book-menu .action-menu-trigger { width: 32px; height: 32px; }
-  .chapter-menu .move-button { width: 34px; height: 32px; }
   .action-menu-panel { min-width: 174px; }
 }
 
-/* Chapter menus live inside the horizontal TOC scroller. Fixed positioning,
-   combined with the small coordinate helper in app.js, lets the full menu
-   escape that scroller instead of being clipped on compact screens. */
-.chapter-menu .action-menu-panel {
-  position: fixed;
-  top: 0;
-  right: auto;
-  transform: none;
+/* Interaction refinements */
+.reader-edit { display: inline-flex; align-items: center; gap: 6px; min-height: 38px; }
+.reader-edit span:first-child { font-size: 15px; line-height: 1; }
+.toc-item { min-width: 0; }
+.move-controls { display: inline-flex; align-items: center; justify-content: flex-end; gap: 3px; padding-right: 5px; opacity: 0; pointer-events: none; transform: translateX(4px); transition: opacity .14s ease, transform .14s ease; }
+.toc-item:hover .move-controls, .toc-item:focus-within .move-controls, .toc-item.selected .move-controls { opacity: 1; pointer-events: auto; transform: translateX(0); }
+.move-button { flex: 0 0 26px; width: 26px; height: 28px; border-radius: 6px; font-size: 14px; }
+.move-button.danger-button { color: var(--focus); }
+.move-button.danger-button:hover, .move-button.danger-button:focus-visible { border-color: var(--focus); background: color-mix(in srgb, var(--focus) 11%, var(--surface)); color: var(--focus); }
+.move-button:disabled { cursor: default; opacity: .32; }
+.toast-region { position: fixed; z-index: 60; right: 20px; bottom: 20px; display: grid; gap: 8px; width: min(360px, calc(100vw - 40px)); pointer-events: none; }
+.toast { border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface-raised); box-shadow: var(--shadow); padding: 11px 13px; color: var(--ink); font-size: 13px; line-height: 1.4; pointer-events: auto; }
+.toast-error { border-color: color-mix(in srgb, var(--focus) 55%, var(--line)); }
+.toast-success { border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); }
+.editor-dialog { width: min(480px, calc(100vw - 32px)); max-width: none; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--surface); color: var(--ink); padding: 0; box-shadow: 0 24px 70px rgb(16 31 28 / 24%); }
+.editor-dialog::backdrop { background: rgb(15 24 23 / 42%); backdrop-filter: blur(2px); }
+.dialog-card { display: grid; gap: 18px; padding: 22px; }
+.dialog-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.dialog-header h2 { margin: 0; color: var(--ink); font-family: Georgia, "Times New Roman", serif; font-size: 22px; }
+.dialog-close { display: inline-grid; width: 32px; height: 32px; place-items: center; border: 1px solid var(--line); border-radius: 6px; background: var(--surface); color: var(--muted); font-size: 20px; cursor: pointer; }
+.dialog-close:hover { border-color: var(--accent); color: var(--accent); }
+.dialog-field { display: grid; gap: 7px; color: var(--muted); font-size: 12px; font-weight: 650; }
+.dialog-field input, .dialog-field textarea { width: 100%; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--surface); color: var(--ink); padding: 10px 11px; }
+.dialog-field textarea { resize: vertical; line-height: 1.45; }
+.dialog-field input:focus, .dialog-field textarea:focus { border-color: var(--accent); outline: 3px solid color-mix(in srgb, var(--accent) 20%, transparent); }
+.dialog-error { margin: -8px 0 0; color: var(--focus); font-size: 12px; }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+@media (max-width: 900px) {
+  .reader-header { grid-template-columns: 42px minmax(0, 1fr) auto auto; grid-template-rows: 74px 42px; height: auto; padding-bottom: 8px; }
+  .reader-header .progress-wrap { grid-column: 2 / -1; grid-row: 2; width: 100%; }
+  .reader-header .progress-copy { justify-content: space-between; }
+  .reader-header .progress-copy span { display: inline; }
+}
+
+@media (max-width: 760px) {
+  .reader-header { grid-template-columns: 38px minmax(0, 1fr) auto auto; grid-template-rows: auto auto; gap: 8px; min-height: 118px; padding: 10px 12px; }
+  .reader-header .progress-wrap { grid-column: 2 / -1; grid-row: 2; }
+  .reader-edit { width: 36px; justify-content: center; padding: 0; }
+  .reader-edit span:last-child { display: none; }
+  .move-controls { padding: 0 7px 8px; opacity: 1; pointer-events: auto; transform: none; }
+  .move-button { flex-basis: 30px; width: 30px; height: 32px; }
+  .toc-item:has(.chapter-check) .move-controls { display: none; }
+  .toast-region { right: 12px; bottom: 12px; width: min(360px, calc(100vw - 24px)); }
+}
+
+@media (max-width: 460px) {
+  .reader-header { grid-template-columns: 36px minmax(0, 1fr) auto auto; min-height: 112px; }
+  .reader-title-group h1 { max-width: 26vw; }
+  .reader-actions { gap: 3px; }
+  .language-picker select, .theme-picker select { min-width: 66px; }
+  .dialog-card { padding: 18px; }
 }

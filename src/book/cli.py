@@ -141,6 +141,7 @@ def command_doc_add(args: argparse.Namespace) -> int:
             raise
         imported_ids.append(int(document["id"]))
         print(f"Added document {document['id']} to {document['book_title']}: {document['title']}")
+        print(f"Source: {document['source_path']}")
     return 1 if failures else 0
 
 

@@ -530,7 +530,6 @@ class Library:
                         or current_mtime != item["source_mtime"]
                         or current_size != item["source_size"]
                     )
-                item.pop("source_path", None)
                 item.pop("source_mtime", None)
                 item.pop("source_size", None)
                 item.pop("source_hash", None)

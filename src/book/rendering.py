@@ -20,6 +20,7 @@ body {
   font-family: Georgia, 'Times New Roman', serif;
   font-size: 18px;
   line-height: 1.8;
+  overflow-wrap: anywhere;
 }
 main { width: min(100% - 40px, 780px); margin: 0 auto; padding: 56px 0 96px; }
 h1, h2, h3, h4, h5, h6 { color: #141920; font-family: Arial, sans-serif; line-height: 1.3; margin: 2.1em 0 .65em; }
@@ -74,7 +75,23 @@ html[data-book-theme] body,
 [data-book-theme] {
   color: var(--book-ink) !important;
   background: var(--book-bg) !important;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
+html[data-book-theme] body > *,
+[data-book-theme] main,
+[data-book-theme] article,
+[data-book-theme] section { max-width: 100%; }
+html[data-book-theme] img,
+html[data-book-theme] video,
+html[data-book-theme] iframe,
+[data-book-theme] img,
+[data-book-theme] video,
+[data-book-theme] iframe { max-width: 100% !important; height: auto; }
+html[data-book-theme] pre,
+html[data-book-theme] table,
+[data-book-theme] pre,
+[data-book-theme] table { max-width: 100%; overflow-x: auto; }
 html[data-book-theme] body h1,
 html[data-book-theme] body h2,
 html[data-book-theme] body h3,

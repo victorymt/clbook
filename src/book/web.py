@@ -45,9 +45,9 @@ def static_text(name: str) -> str:
 
 
 def document_payload(library: Library, document: object, *, stale: bool | None = None) -> dict[str, object]:
-    """Return document metadata safe to expose through the JSON API."""
+    """Return document metadata for the trusted, loopback JSON API."""
     payload = dict(document)  # type: ignore[arg-type]
-    source_path = payload.pop("source_path", None)
+    source_path = payload.get("source_path")
     payload.pop("resource_root", None)
     payload.pop("source_mtime", None)
     payload.pop("source_size", None)
@@ -132,10 +132,10 @@ def make_handler(library: Library) -> type[BaseHTTPRequestHandler]:
                 )
                 return
             if path == "/static/app.css":
-                self.send_bytes(HTTPStatus.OK, static_text("app.css").encode("utf-8"), "text/css; charset=utf-8")
+                self.send_bytes(HTTPStatus.OK, static_text("app.css").encode("utf-8"), "text/css; charset=utf-8", {"Cache-Control": "no-store"})
                 return
             if path == "/static/app.js":
-                self.send_bytes(HTTPStatus.OK, static_text("app.js").encode("utf-8"), "text/javascript; charset=utf-8")
+                self.send_bytes(HTTPStatus.OK, static_text("app.js").encode("utf-8"), "text/javascript; charset=utf-8", {"Cache-Control": "no-store"})
                 return
             if path == "/api/books":
                 self.send_json(library.list_books_for_web())
